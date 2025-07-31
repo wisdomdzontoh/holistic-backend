@@ -39,7 +39,7 @@ backend/                # Root Django project
 │   ├── templates/              # PDF templates, export layouts
 │   └── views.py                # Download/export endpoints
 │
-├── configs/                   # Admin-configurable weights, targets, rules
+├── configurations/                   # Admin-configurable weights, targets, rules
 │   ├── models.py               # ScoringRules, WeightingScheme
 │   ├── admin.py
 │   ├── views.py
