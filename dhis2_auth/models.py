@@ -8,7 +8,7 @@ class DHIS2User(models.Model):
     Model to track DHIS2 user metadata and usage statistics.
     This is optional but useful for analytics and audit trails.
     """
-    dhis2_username = models.CharField(max_length=255, unique=True)
+    dhis2_username = models.CharField(max_length=255)
     dhis2_instance_url = models.URLField()
     dhis2_user_id = models.CharField(max_length=255, blank=True, null=True)
     dhis2_org_units = models.JSONField(default=list, blank=True)
@@ -28,6 +28,7 @@ class DHIS2User(models.Model):
         db_table = 'dhis2_users'
         verbose_name = 'DHIS2 User'
         verbose_name_plural = 'DHIS2 Users'
+        unique_together = ['dhis2_username', 'dhis2_instance_url']
     
     def __str__(self):
         return f"{self.dhis2_username}@{self.dhis2_instance_url}"

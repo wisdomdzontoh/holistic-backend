@@ -1,4 +1,5 @@
 import logging
+import requests
 from rest_framework import status
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import AllowAny
@@ -6,6 +7,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from django.utils import timezone
 from django.conf import settings
+from django.db import IntegrityError, DatabaseError
 
 from .serializers import (
     LoginSerializer, LoginResponseSerializer, LogoutResponseSerializer,
@@ -62,11 +64,21 @@ class LoginView(APIView):
             )
             
             # Test connection and authenticate
-            if not client.test_connection():
+            try:
+                if not client.test_connection():
+                    return Response(
+                        {
+                            'success': False,
+                            'message': 'Unable to connect to DHIS2 instance. Please check the URL and ensure the server is accessible.'
+                        },
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+            except Exception as e:
+                logger.error(f"Connection test failed: {str(e)}")
                 return Response(
                     {
                         'success': False,
-                        'message': 'Unable to connect to DHIS2 instance. Please check the URL.'
+                        'message': f'Connection test failed: {str(e)}. Please check the DHIS2 instance URL and network connectivity.'
                     },
                     status=status.HTTP_400_BAD_REQUEST
                 )
@@ -80,12 +92,31 @@ class LoginView(APIView):
                 request.session.create()
                 session_key = request.session.session_key
             
-            dhis2_session = create_dhis2_session(
-                user_info=user_info,
-                instance_url=instance_url,
-                session_key=session_key,
-                request=request
-            )
+            try:
+                dhis2_session = create_dhis2_session(
+                    user_info=user_info,
+                    instance_url=instance_url,
+                    session_key=session_key,
+                    request=request
+                )
+            except IntegrityError as e:
+                logger.error(f"Database integrity error during session creation: {str(e)}")
+                return Response(
+                    {
+                        'success': False,
+                        'message': 'Session creation failed. Please try again.'
+                    },
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                )
+            except DatabaseError as e:
+                logger.error(f"Database error during session creation: {str(e)}")
+                return Response(
+                    {
+                        'success': False,
+                        'message': 'Database error occurred. Please try again.'
+                    },
+                    status=status.HTTP_500_INTERNAL_SERVER_ERROR
+                )
             
             # Prepare response
             user_serializer = UserInfoSerializer(dhis2_session.user)
@@ -100,12 +131,47 @@ class LoginView(APIView):
             logger.info(f"Successful login for user {username} from {instance_url}")
             return Response(response_data, status=status.HTTP_200_OK)
             
+        except requests.RequestException as e:
+            logger.error(f"Login failed for user {username} from {instance_url}: {str(e)}")
+            if hasattr(e, 'response') and e.response:
+                if e.response.status_code == 401:
+                    return Response(
+                        {
+                            'success': False,
+                            'message': 'Authentication failed. Please check your username and password.'
+                        },
+                        status=status.HTTP_401_UNAUTHORIZED
+                    )
+                elif e.response.status_code == 403:
+                    return Response(
+                        {
+                            'success': False,
+                            'message': 'Access forbidden. Your account may not have the required permissions.'
+                        },
+                        status=status.HTTP_403_FORBIDDEN
+                    )
+                else:
+                    return Response(
+                        {
+                            'success': False,
+                            'message': f'DHIS2 server error: {e.response.status_code} - {e.response.text[:200]}'
+                        },
+                        status=status.HTTP_502_BAD_GATEWAY
+                    )
+            else:
+                return Response(
+                    {
+                        'success': False,
+                        'message': f'Connection error: {str(e)}. Please check your network connection.'
+                    },
+                    status=status.HTTP_502_BAD_GATEWAY
+                )
         except Exception as e:
             logger.error(f"Login failed for user {username} from {instance_url}: {str(e)}")
             return Response(
                 {
                     'success': False,
-                    'message': 'Authentication failed. Please check your credentials.'
+                    'message': 'Authentication failed. Please check your credentials and try again.'
                 },
                 status=status.HTTP_401_UNAUTHORIZED
             )

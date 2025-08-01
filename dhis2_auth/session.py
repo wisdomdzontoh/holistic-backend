@@ -55,6 +55,13 @@ def create_dhis2_session(user_info: Dict[str, Any], instance_url: str,
     # Update login stats
     dhis2_user.update_login_stats(session_key)
     
+    # Clean up any existing sessions with the same session_key
+    DHIS2Session.objects.filter(session_key=session_key).delete()
+    
+    # Remove from cache if exists
+    cache_key = f"dhis2_session_{session_key}"
+    cache.delete(cache_key)
+    
     # Create session record
     session_expiry = timezone.now() + timedelta(hours=24)  # 24 hour session
     
@@ -76,7 +83,6 @@ def create_dhis2_session(user_info: Dict[str, Any], instance_url: str,
         request.session.set_expiry(24 * 60 * 60)  # 24 hours
     
     # Store in cache for quick access
-    cache_key = f"dhis2_session_{session_key}"
     cache.set(cache_key, session_data, timeout=24 * 60 * 60)  # 24 hours
     
     # Create database session record

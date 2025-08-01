@@ -2,12 +2,16 @@ from rest_framework import serializers
 from .models import DHIS2User, DHIS2Session
 
 
+from .utils import get_default_dhis2_instance_url
+
 class LoginSerializer(serializers.Serializer):
     """
     Serializer for DHIS2 login credentials.
     """
     instance_url = serializers.URLField(
-        help_text="DHIS2 instance URL (e.g., https://dhims.chimgh.org/dhims)"
+        required=False,
+        allow_blank=True,
+        help_text="DHIS2 instance URL (e.g., https://dhims.chimgh.org/dhims). If not provided, uses system default."
     )
     username = serializers.CharField(
         max_length=255,
@@ -21,9 +25,24 @@ class LoginSerializer(serializers.Serializer):
     
     def validate_instance_url(self, value):
         """Validate DHIS2 instance URL"""
-        if not value.startswith(('http://', 'https://')):
+        if value and not value.startswith(('http://', 'https://')):
             raise serializers.ValidationError("Instance URL must start with http:// or https://")
-        return value.rstrip('/')
+        return value.rstrip('/') if value else value
+    
+    def validate(self, attrs):
+        """Validate and set default instance URL if not provided"""
+        instance_url = attrs.get('instance_url')
+        
+        if not instance_url:
+            # Get default instance URL from system configuration
+            default_url = get_default_dhis2_instance_url()
+            if not default_url:
+                raise serializers.ValidationError({
+                    'instance_url': 'No DHIS2 instance URL provided and no default configured in system settings.'
+                })
+            attrs['instance_url'] = default_url
+        
+        return attrs
 
 
 class UserInfoSerializer(serializers.ModelSerializer):

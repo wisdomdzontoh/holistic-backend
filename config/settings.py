@@ -202,4 +202,4 @@ CELERY_RESULT_BACKEND = CELERY_BROKER_URL
 
 
 #DHIS2 Settings
-DEFAULT_DHIS2_URL = os.getenv('DEFAULT_DHIS2_URL')
+DEFAULT_DHIS2_URL = os.getenv('DEFAULT_DHIS2_INSTANCE', 'https://dhims.chimgh.org/dhims')

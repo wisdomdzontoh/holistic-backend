@@ -284,6 +284,12 @@ class Command(BaseCommand):
                 'config_type': 'notification',
                 'value': '{"email_notifications": false, "dashboard_alerts": true, "score_threshold_alerts": [-1, -2]}',
                 'description': 'Notification and alert settings'
+            },
+            {
+                'key': 'dhis2_integration',
+                'config_type': 'integration',
+                'value': '{"default_instance_url": "https://dhims.chimgh.org/dhims", "timeout_seconds": 30, "retry_attempts": 3}',
+                'description': 'DHIS2 integration settings including default instance URL'
             }
         ]
         
