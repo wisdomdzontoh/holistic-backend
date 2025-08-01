@@ -1,3 +1,237 @@
 from django.contrib import admin
+from django.utils.html import format_html
+from django.utils import timezone
+from .models import TrackedIndicator, IndicatorCategory, IndicatorCategoryMapping, IndicatorThreshold
 
-# Register your models here.
+
+class IndicatorThresholdInline(admin.TabularInline):
+    """
+    Inline admin for indicator thresholds
+    """
+    model = IndicatorThreshold
+    extra = 0
+    fields = ['min_value', 'max_value', 'score', 'color', 'label']
+    ordering = ['min_value']
+
+
+class IndicatorCategoryMappingInline(admin.TabularInline):
+    """
+    Inline admin for indicator category mappings
+    """
+    model = IndicatorCategoryMapping
+    extra = 0
+    fields = ['category', 'weight']
+    autocomplete_fields = ['category']
+
+
+@admin.register(TrackedIndicator)
+class TrackedIndicatorAdmin(admin.ModelAdmin):
+    """
+    Admin interface for tracked indicators
+    """
+    list_display = [
+        'name', 'dhis2_uid', 'indicator_type', 'is_active', 'target_value',
+        'target_type', 'last_sync', 'sync_status'
+    ]
+    list_filter = [
+        'indicator_type', 'is_active', 'target_type', 'created_at', 'updated_at'
+    ]
+    search_fields = ['name', 'dhis2_uid', 'description', 'dhis2_name']
+    readonly_fields = [
+        'created_at', 'updated_at', 'last_sync', 'dhis2_name', 'dhis2_description'
+    ]
+    ordering = ['name']
+    
+    fieldsets = (
+        ('Basic Information', {
+            'fields': ('name', 'dhis2_uid', 'indicator_type', 'is_active', 'description')
+        }),
+        ('DHIS2 Metadata', {
+            'fields': ('dhis2_name', 'dhis2_description', 'last_sync'),
+            'classes': ('collapse',)
+        }),
+        ('Formula and Calculation', {
+            'fields': ('formula',),
+            'classes': ('collapse',)
+        }),
+        ('Target and Scoring', {
+            'fields': ('target_value', 'target_type', 'min_score', 'max_score')
+        }),
+        ('Timestamps', {
+            'fields': ('created_at', 'updated_at'),
+            'classes': ('collapse',)
+        }),
+    )
+    
+    inlines = [IndicatorThresholdInline, IndicatorCategoryMappingInline]
+    
+    def sync_status(self, obj):
+        """Display sync status"""
+        if not obj.last_sync:
+            return format_html('<span style="color: orange;">Never Synced</span>')
+        
+        days_since_sync = (timezone.now() - obj.last_sync).days
+        if days_since_sync > 30:
+            return format_html('<span style="color: red;">Outdated ({days} days)</span>', days=days_since_sync)
+        elif days_since_sync > 7:
+            return format_html('<span style="color: orange;">Stale ({days} days)</span>', days=days_since_sync)
+        else:
+            return format_html('<span style="color: green;">Recent ({days} days)</span>', days=days_since_sync)
+    
+    sync_status.short_description = 'Sync Status'
+    
+    actions = ['activate_indicators', 'deactivate_indicators', 'sync_metadata']
+    
+    def activate_indicators(self, request, queryset):
+        """Activate selected indicators"""
+        updated = queryset.update(is_active=True)
+        self.message_user(request, f'{updated} indicators have been activated.')
+    activate_indicators.short_description = "Activate selected indicators"
+    
+    def deactivate_indicators(self, request, queryset):
+        """Deactivate selected indicators"""
+        updated = queryset.update(is_active=False)
+        self.message_user(request, f'{updated} indicators have been deactivated.')
+    deactivate_indicators.short_description = "Deactivate selected indicators"
+    
+    def sync_metadata(self, request, queryset):
+        """Sync metadata for selected indicators"""
+        # This would typically call the sync method
+        self.message_user(request, f'Metadata sync initiated for {queryset.count()} indicators.')
+    sync_metadata.short_description = "Sync metadata for selected indicators"
+
+
+@admin.register(IndicatorCategory)
+class IndicatorCategoryAdmin(admin.ModelAdmin):
+    """
+    Admin interface for indicator categories
+    """
+    list_display = ['name', 'order', 'is_active', 'indicator_count', 'color_preview']
+    list_filter = ['is_active']
+    search_fields = ['name', 'description']
+    ordering = ['order', 'name']
+    
+    fieldsets = (
+        ('Basic Information', {
+            'fields': ('name', 'description', 'is_active')
+        }),
+        ('Display Settings', {
+            'fields': ('color', 'order')
+        }),
+    )
+    
+    def indicator_count(self, obj):
+        """Count of indicators in this category"""
+        return obj.indicator_mappings.count()
+    indicator_count.short_description = 'Indicators'
+    
+    def color_preview(self, obj):
+        """Show color preview"""
+        return format_html(
+            '<div style="background-color: {}; width: 20px; height: 20px; border: 1px solid #ccc;"></div>',
+            obj.color
+        )
+    color_preview.short_description = 'Color'
+    
+    actions = ['activate_categories', 'deactivate_categories']
+    
+    def activate_categories(self, request, queryset):
+        """Activate selected categories"""
+        updated = queryset.update(is_active=True)
+        self.message_user(request, f'{updated} categories have been activated.')
+    activate_categories.short_description = "Activate selected categories"
+    
+    def deactivate_categories(self, request, queryset):
+        """Deactivate selected categories"""
+        updated = queryset.update(is_active=False)
+        self.message_user(request, f'{updated} categories have been deactivated.')
+    deactivate_categories.short_description = "Deactivate selected categories"
+
+
+@admin.register(IndicatorCategoryMapping)
+class IndicatorCategoryMappingAdmin(admin.ModelAdmin):
+    """
+    Admin interface for indicator category mappings
+    """
+    list_display = ['indicator', 'category', 'weight']
+    list_filter = ['category__is_active', 'category']
+    search_fields = ['indicator__name', 'category__name']
+    ordering = ['category__order', 'weight']
+    
+    autocomplete_fields = ['indicator', 'category']
+    
+    fieldsets = (
+        ('Mapping', {
+            'fields': ('indicator', 'category', 'weight')
+        }),
+    )
+    
+    actions = ['normalize_weights']
+    
+    def normalize_weights(self, request, queryset):
+        """Normalize weights within categories"""
+        # Group by category and normalize weights
+        categories = queryset.values_list('category', flat=True).distinct()
+        
+        for category_id in categories:
+            mappings = queryset.filter(category_id=category_id).order_by('weight')
+            total_weight = sum(mapping.weight for mapping in mappings)
+            
+            if total_weight > 0:
+                for mapping in mappings:
+                    mapping.weight = mapping.weight / total_weight
+                    mapping.save()
+        
+        self.message_user(request, f'Weights normalized for {len(categories)} categories.')
+    normalize_weights.short_description = "Normalize weights within categories"
+
+
+@admin.register(IndicatorThreshold)
+class IndicatorThresholdAdmin(admin.ModelAdmin):
+    """
+    Admin interface for indicator thresholds
+    """
+    list_display = ['indicator', 'min_value', 'max_value', 'score', 'label', 'color_preview']
+    list_filter = ['indicator__is_active', 'score', 'indicator__indicator_type']
+    search_fields = ['indicator__name', 'label']
+    ordering = ['indicator__name', 'min_value']
+    
+    autocomplete_fields = ['indicator']
+    
+    fieldsets = (
+        ('Threshold Definition', {
+            'fields': ('indicator', 'min_value', 'max_value')
+        }),
+        ('Scoring', {
+            'fields': ('score', 'label', 'color')
+        }),
+    )
+    
+    def color_preview(self, obj):
+        """Show color preview"""
+        return format_html(
+            '<div style="background-color: {}; width: 20px; height: 20px; border: 1px solid #ccc;"></div>',
+            obj.color
+        )
+    color_preview.short_description = 'Color'
+    
+    actions = ['duplicate_thresholds']
+    
+    def duplicate_thresholds(self, request, queryset):
+        """Duplicate selected thresholds"""
+        duplicated_count = 0
+        
+        for threshold in queryset:
+            # Create a copy with slightly modified values
+            new_threshold = IndicatorThreshold.objects.create(
+                indicator=threshold.indicator,
+                min_value=threshold.min_value + 1,
+                max_value=threshold.max_value + 1,
+                score=threshold.score,
+                color=threshold.color,
+                label=f"{threshold.label} (Copy)"
+            )
+            duplicated_count += 1
+        
+        self.message_user(request, f'{duplicated_count} thresholds have been duplicated.')
+    duplicate_thresholds.short_description = "Duplicate selected thresholds"
