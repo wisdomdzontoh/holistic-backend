@@ -6,6 +6,7 @@ from rest_framework.permissions import IsAuthenticated
 from django_filters.rest_framework import DjangoFilterBackend
 from django.db import transaction
 from django.utils import timezone
+import logging
 
 from .models import (
     DataSyncLog, IndicatorData, IndicatorScore, ObjectiveScore, SectorScore
@@ -22,7 +23,10 @@ from .serializers import (
     AssessmentReportSerializer
 )
 from .services import DataSyncService, ScoreCalculationService, DashboardService
-from dhis2_auth.session import get_dhis2_user
+from dhis2_auth.session import get_dhis2_user, get_dhis2_session_data
+from dhis2_auth.dhis_client import DHIS2ClientFactory
+
+logger = logging.getLogger(__name__)
 
 
 class DataSyncLogViewSet(viewsets.ModelViewSet):
@@ -126,9 +130,9 @@ class IndicatorScoreViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['post'])
     def override_score(self, request, pk=None):
         """
-        Manually override an indicator score
+        Override indicator score manually
         """
-        score = self.get_object()
+        indicator_score = self.get_object()
         serializer = ScoreOverrideSerializer(data=request.data)
         
         if not serializer.is_valid():
@@ -136,28 +140,26 @@ class IndicatorScoreViewSet(viewsets.ModelViewSet):
         
         try:
             data = serializer.validated_data
-            dhis2_user = get_dhis2_user(request)
+            indicator_score.score = data['score']
+            indicator_score.is_manual_override = True
+            indicator_score.override_reason = data['reason']
+            indicator_score.override_user = get_dhis2_user(request)
             
-            with transaction.atomic():
-                score.is_manual_override = True
-                score.score = data['score']
-                score.override_reason = data['reason']
-                score.override_user = dhis2_user
-                
-                if data.get('score_color'):
-                    score.score_color = data['score_color']
-                if data.get('score_label'):
-                    score.score_label = data['score_label']
-                
-                score.save()
-                
-                # Recalculate objective and sector scores
-                self._recalculate_higher_level_scores(score)
+            # Set color and label if provided
+            if 'score_color' in data:
+                indicator_score.score_color = data['score_color']
+            if 'score_label' in data:
+                indicator_score.score_label = data['score_label']
+            
+            indicator_score.save()
+            
+            # Recalculate higher-level scores
+            self._recalculate_higher_level_scores(indicator_score)
             
             return Response({
                 'success': True,
                 'message': 'Score override applied successfully',
-                'score': IndicatorScoreSerializer(score).data
+                'indicator_score': IndicatorScoreSerializer(indicator_score).data
             })
             
         except Exception as e:
@@ -169,27 +171,27 @@ class IndicatorScoreViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['post'])
     def recalculate(self, request, pk=None):
         """
-        Recalculate an indicator score
+        Recalculate indicator score
         """
-        score = self.get_object()
+        indicator_score = self.get_object()
         
         try:
-            # Remove manual override
-            score.is_manual_override = False
-            score.override_reason = ''
-            score.override_user = None
-            score.save()
+            # Clear manual override
+            indicator_score.is_manual_override = False
+            indicator_score.override_reason = ''
+            indicator_score.override_user = None
             
-            # Recalculate the score
-            score.calculate_score()
+            # Recalculate score
+            indicator_score.calculate_score()
+            indicator_score.save()
             
-            # Recalculate higher level scores
-            self._recalculate_higher_level_scores(score)
+            # Recalculate higher-level scores
+            self._recalculate_higher_level_scores(indicator_score)
             
             return Response({
                 'success': True,
                 'message': 'Score recalculated successfully',
-                'score': IndicatorScoreSerializer(score).data
+                'indicator_score': IndicatorScoreSerializer(indicator_score).data
             })
             
         except Exception as e:
@@ -199,25 +201,34 @@ class IndicatorScoreViewSet(viewsets.ModelViewSet):
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
     
     def _recalculate_higher_level_scores(self, indicator_score):
-        """Recalculate objective and sector scores after indicator score change"""
-        # Recalculate objective score
-        objective_score = ObjectiveScore.objects.filter(
-            objective=indicator_score.objective,
-            org_unit_id=indicator_score.org_unit_id,
-            assessment_period=indicator_score.assessment_period
-        ).first()
-        
-        if objective_score:
-            objective_score.calculate_score()
-        
-        # Recalculate sector score
-        sector_score = SectorScore.objects.filter(
-            org_unit_id=indicator_score.org_unit_id,
-            assessment_period=indicator_score.assessment_period
-        ).first()
-        
-        if sector_score:
-            sector_score.calculate_score()
+        """
+        Recalculate objective and sector scores after indicator score change
+        """
+        try:
+            # Recalculate objective score
+            objective_score = ObjectiveScore.objects.filter(
+                objective=indicator_score.objective,
+                org_unit_id=indicator_score.org_unit_id,
+                assessment_period=indicator_score.assessment_period
+            ).first()
+            
+            if objective_score:
+                objective_score.calculate_score()
+                objective_score.save()
+            
+            # Recalculate sector score
+            sector_score = SectorScore.objects.filter(
+                org_unit_id=indicator_score.org_unit_id,
+                assessment_period=indicator_score.assessment_period
+            ).first()
+            
+            if sector_score:
+                sector_score.calculate_score()
+                sector_score.save()
+                
+        except Exception as e:
+            # Log error but don't fail the main operation
+            logger.error(f"Error recalculating higher-level scores: {str(e)}")
 
 
 class ObjectiveScoreViewSet(viewsets.ModelViewSet):
@@ -241,26 +252,28 @@ class ObjectiveScoreViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['post'])
     def recalculate(self, request, pk=None):
         """
-        Recalculate an objective score
+        Recalculate objective score
         """
-        score = self.get_object()
+        objective_score = self.get_object()
         
         try:
-            score.calculate_score()
+            objective_score.calculate_score()
+            objective_score.save()
             
             # Recalculate sector score
             sector_score = SectorScore.objects.filter(
-                org_unit_id=score.org_unit_id,
-                assessment_period=score.assessment_period
+                org_unit_id=objective_score.org_unit_id,
+                assessment_period=objective_score.assessment_period
             ).first()
             
             if sector_score:
                 sector_score.calculate_score()
+                sector_score.save()
             
             return Response({
                 'success': True,
                 'message': 'Objective score recalculated successfully',
-                'score': ObjectiveScoreSerializer(score).data
+                'objective_score': ObjectiveScoreSerializer(objective_score).data
             })
             
         except Exception as e:
@@ -291,17 +304,18 @@ class SectorScoreViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['post'])
     def recalculate(self, request, pk=None):
         """
-        Recalculate a sector score
+        Recalculate sector score
         """
-        score = self.get_object()
+        sector_score = self.get_object()
         
         try:
-            score.calculate_score()
+            sector_score.calculate_score()
+            sector_score.save()
             
             return Response({
                 'success': True,
                 'message': 'Sector score recalculated successfully',
-                'score': SectorScoreSerializer(score).data
+                'sector_score': SectorScoreSerializer(sector_score).data
             })
             
         except Exception as e:
@@ -317,98 +331,100 @@ class AssessmentDashboardViewSet(viewsets.ViewSet):
     """
     permission_classes = [IsAuthenticated]
     
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.dashboard_service = DashboardService()
+    
     @action(detail=False, methods=['get'])
     def summary(self, request):
         """
-        Get dashboard summary for current user's org unit
+        Get dashboard summary data
         """
-        # Get user's org unit from session
-        session_data = get_dhis2_session_data(request)
-        if not session_data or not session_data.get('org_units'):
+        try:
+            # Get user's org unit from session
+            session_key = request.session.session_key
+            session_data = get_dhis2_session_data(session_key)
+            if not session_data or not session_data.get('org_units'):
+                return Response({
+                    'error': 'No org units found in session'
+                }, status=status.HTTP_400_BAD_REQUEST)
+            
+            org_unit_id = session_data['org_units'][0]
+            assessment_period = request.query_params.get('assessment_period')
+            
+            summary_data = self.dashboard_service.get_dashboard_summary(
+                request.user, org_unit_id, assessment_period
+            )
+            
+            serializer = DashboardSummarySerializer(summary_data)
+            return Response(serializer.data)
+            
+        except Exception as e:
             return Response({
-                'error': 'No org units found in session'
-            }, status=status.HTTP_400_BAD_REQUEST)
-        
-        # Use the first org unit (could be enhanced to support multiple)
-        org_unit_id = session_data['org_units'][0]
-        
-        # Get assessment period from query params or use current
-        assessment_period_id = request.query_params.get('assessment_period_id')
-        if assessment_period_id:
-            from configurations.models import AssessmentPeriod
-            assessment_period = AssessmentPeriod.objects.get(id=assessment_period_id)
-        else:
-            assessment_period = None
-        
-        # Get dashboard summary
-        dashboard_service = DashboardService()
-        summary = dashboard_service.get_dashboard_summary(org_unit_id, assessment_period)
-        
-        if not summary:
-            return Response({
-                'error': 'No assessment data found for this org unit'
-            }, status=status.HTTP_404_NOT_FOUND)
-        
-        serializer = DashboardSummarySerializer(summary)
-        return Response(serializer.data)
+                'success': False,
+                'error': str(e)
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
     
     @action(detail=False, methods=['get'])
     def objectives(self, request):
         """
         Get objective dashboard data
         """
-        # Get user's org unit from session
-        session_data = get_dhis2_session_data(request)
-        if not session_data or not session_data.get('org_units'):
+        try:
+            # Get user's org unit from session
+            session_key = request.session.session_key
+            session_data = get_dhis2_session_data(session_key)
+            if not session_data or not session_data.get('org_units'):
+                return Response({
+                    'error': 'No org units found in session'
+                }, status=status.HTTP_400_BAD_REQUEST)
+            
+            org_unit_id = session_data['org_units'][0]
+            assessment_period = request.query_params.get('assessment_period')
+            
+            objectives_data = self.dashboard_service.get_objective_dashboard(
+                request.user, org_unit_id, assessment_period
+            )
+            
+            serializer = ObjectiveDashboardSerializer(objectives_data, many=True)
+            return Response(serializer.data)
+            
+        except Exception as e:
             return Response({
-                'error': 'No org units found in session'
-            }, status=status.HTTP_400_BAD_REQUEST)
-        
-        org_unit_id = session_data['org_units'][0]
-        
-        # Get assessment period from query params or use current
-        assessment_period_id = request.query_params.get('assessment_period_id')
-        if assessment_period_id:
-            from configurations.models import AssessmentPeriod
-            assessment_period = AssessmentPeriod.objects.get(id=assessment_period_id)
-        else:
-            assessment_period = None
-        
-        # Get objective dashboard data
-        dashboard_service = DashboardService()
-        objectives = dashboard_service.get_objective_dashboard(org_unit_id, assessment_period)
-        
-        serializer = ObjectiveDashboardSerializer(objectives, many=True)
-        return Response(serializer.data)
+                'success': False,
+                'error': str(e)
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
     
     @action(detail=False, methods=['get'])
     def indicators(self, request):
         """
         Get indicator dashboard data
         """
-        # Get user's org unit from session
-        session_data = get_dhis2_session_data(request)
-        if not session_data or not session_data.get('org_units'):
+        try:
+            # Get user's org unit from session
+            session_key = request.session.session_key
+            session_data = get_dhis2_session_data(session_key)
+            if not session_data or not session_data.get('org_units'):
+                return Response({
+                    'error': 'No org units found in session'
+                }, status=status.HTTP_400_BAD_REQUEST)
+            
+            org_unit_id = session_data['org_units'][0]
+            assessment_period = request.query_params.get('assessment_period')
+            objective_id = request.query_params.get('objective_id')
+            
+            indicators_data = self.dashboard_service.get_indicator_dashboard(
+                request.user, org_unit_id, assessment_period, objective_id
+            )
+            
+            serializer = IndicatorDashboardSerializer(indicators_data, many=True)
+            return Response(serializer.data)
+            
+        except Exception as e:
             return Response({
-                'error': 'No org units found in session'
-            }, status=status.HTTP_400_BAD_REQUEST)
-        
-        org_unit_id = session_data['org_units'][0]
-        
-        # Get assessment period from query params or use current
-        assessment_period_id = request.query_params.get('assessment_period_id')
-        if assessment_period_id:
-            from configurations.models import AssessmentPeriod
-            assessment_period = AssessmentPeriod.objects.get(id=assessment_period_id)
-        else:
-            assessment_period = None
-        
-        # Get indicator dashboard data
-        dashboard_service = DashboardService()
-        indicators = dashboard_service.get_indicator_dashboard(org_unit_id, assessment_period)
-        
-        serializer = IndicatorDashboardSerializer(indicators, many=True)
-        return Response(serializer.data)
+                'success': False,
+                'error': str(e)
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 class AssessmentManagementViewSet(viewsets.ViewSet):
@@ -420,19 +436,29 @@ class AssessmentManagementViewSet(viewsets.ViewSet):
     @action(detail=False, methods=['post'])
     def calculate_scores(self, request):
         """
-        Bulk calculate scores
+        Calculate scores for specified parameters
         """
         serializer = BulkScoreCalculationSerializer(data=request.data)
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
         
         try:
+            # Get user's org unit from session if not specified
+            session_key = request.session.session_key
+            session_data = get_dhis2_session_data(session_key)
+            
+            if not serializer.validated_data.get('org_unit_ids') and session_data:
+                serializer.validated_data['org_unit_ids'] = session_data.get('org_units', [])
+            
+            # Initialize calculation service
             calculation_service = ScoreCalculationService()
+            
+            # Perform bulk calculation
             results = calculation_service.bulk_calculate_scores(serializer.validated_data)
             
             return Response({
                 'success': True,
-                'message': f'Score calculation completed. Processed {results["processed_org_units"]} org units.',
+                'message': 'Score calculation completed successfully',
                 'results': results
             })
             
@@ -447,95 +473,48 @@ class AssessmentManagementViewSet(viewsets.ViewSet):
         """
         Generate assessment report
         """
-        # Get parameters
-        org_unit_id = request.query_params.get('org_unit_id')
-        assessment_period_id = request.query_params.get('assessment_period_id')
-        
-        if not org_unit_id:
-            return Response({
-                'error': 'org_unit_id is required'
-            }, status=status.HTTP_400_BAD_REQUEST)
-        
-        # Get assessment period
-        if assessment_period_id:
-            from configurations.models import AssessmentPeriod
-            assessment_period = AssessmentPeriod.objects.get(id=assessment_period_id)
-        else:
-            assessment_period = AssessmentPeriod.objects.filter(is_current=True).first()
-        
-        if not assessment_period:
-            return Response({
-                'error': 'No assessment period found'
-            }, status=status.HTTP_404_NOT_FOUND)
-        
         try:
-            # Get sector score
-            sector_score = SectorScore.objects.filter(
-                org_unit_id=org_unit_id,
-                assessment_period=assessment_period
-            ).first()
+            # Get parameters
+            org_unit_id = request.query_params.get('org_unit_id')
+            assessment_period_id = request.query_params.get('assessment_period_id')
+            format_type = request.query_params.get('format', 'excel')
             
-            if not sector_score:
+            # Get user's org unit from session if not specified
+            if not org_unit_id:
+                session_key = request.session.session_key
+                session_data = get_dhis2_session_data(session_key)
+                if session_data and session_data.get('org_units'):
+                    org_unit_id = session_data['org_units'][0]
+            
+            if not org_unit_id:
                 return Response({
-                    'error': 'No assessment data found for this org unit and period'
+                    'error': 'No org unit specified'
+                }, status=status.HTTP_400_BAD_REQUEST)
+            
+            # Get assessment period
+            if assessment_period_id:
+                from configurations.models import AssessmentPeriod
+                assessment_period = AssessmentPeriod.objects.get(id=assessment_period_id)
+            else:
+                assessment_period = AssessmentPeriod.objects.filter(is_current=True).first()
+            
+            if not assessment_period:
+                return Response({
+                    'error': 'No assessment period found'
                 }, status=status.HTTP_404_NOT_FOUND)
             
-            # Get objective scores
-            objective_scores = ObjectiveScore.objects.filter(
-                org_unit_id=org_unit_id,
-                assessment_period=assessment_period
-            ).select_related('objective')
+            # Generate report data
+            from .services import DashboardService
+            dashboard_service = DashboardService()
             
-            # Get indicator scores
-            indicator_scores = IndicatorScore.objects.filter(
-                org_unit_id=org_unit_id,
-                assessment_period=assessment_period
-            ).select_related('indicator', 'objective')
+            report_data = dashboard_service.get_org_unit_performance(
+                request.user, org_unit_id, assessment_period.name
+            )
             
-            # Build report data
-            report_data = {
-                'report_id': f"ASSESSMENT_{org_unit_id}_{assessment_period.name}_{timezone.now().strftime('%Y%m%d_%H%M%S')}",
-                'org_unit_id': org_unit_id,
-                'org_unit_name': sector_score.org_unit_name,
-                'assessment_period_name': assessment_period.name,
-                'sector_score': sector_score.overall_score,
-                'sector_color': sector_score.score_color,
-                'sector_label': sector_score.score_label,
-                'objectives': [],
-                'indicators': [],
-                'generated_at': timezone.now(),
-                'generated_by': get_dhis2_user(request).dhis2_username if get_dhis2_user(request) else 'System'
-            }
-            
-            # Add objective data
-            for obj_score in objective_scores:
-                report_data['objectives'].append({
-                    'objective_id': obj_score.objective.id,
-                    'objective_name': obj_score.objective.name,
-                    'objective_code': obj_score.objective.code,
-                    'objective_color': obj_score.objective.color,
-                    'score': obj_score.final_score,
-                    'score_color': obj_score.score_color,
-                    'score_label': obj_score.score_label,
-                    'indicator_count': obj_score.total_indicators,
-                    'trend_direction': 'stable'  # Could be enhanced
-                })
-            
-            # Add indicator data
-            for ind_score in indicator_scores:
-                report_data['indicators'].append({
-                    'indicator_id': ind_score.indicator.id,
-                    'indicator_name': ind_score.indicator.name,
-                    'indicator_uid': ind_score.indicator.dhis2_uid,
-                    'objective_name': ind_score.objective.name,
-                    'current_value': ind_score.current_value,
-                    'target_value': ind_score.target_value,
-                    'score': ind_score.score,
-                    'score_color': ind_score.score_color,
-                    'score_label': ind_score.score_label,
-                    'trend_direction': 'stable',  # Could be enhanced
-                    'weight': ind_score.weight
-                })
+            # Add report metadata
+            report_data['report_id'] = f"assessment_{org_unit_id}_{assessment_period.id}"
+            report_data['generated_at'] = timezone.now()
+            report_data['generated_by'] = request.user.username if hasattr(request.user, 'username') else 'System'
             
             serializer = AssessmentReportSerializer(report_data)
             return Response(serializer.data)
@@ -545,3 +524,635 @@ class AssessmentManagementViewSet(viewsets.ViewSet):
                 'success': False,
                 'error': str(e)
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+    
+    @action(detail=False, methods=['get'])
+    def holistic_assessment_data(self, request):
+        """
+        Get comprehensive data for holistic assessment interface
+        """
+        try:
+            # Get user's org unit from session
+            session_key = request.session.session_key
+            session_data = get_dhis2_session_data(session_key)
+            if not session_data or not session_data.get('org_units'):
+                return Response({
+                    'error': 'No org units found in session'
+                }, status=status.HTTP_400_BAD_REQUEST)
+            
+            org_unit_id = session_data['org_units'][0]
+            
+            # Get assessment period from query params or use current
+            assessment_period_id = request.query_params.get('assessment_period_id')
+            if assessment_period_id:
+                from configurations.models import AssessmentPeriod
+                assessment_period = AssessmentPeriod.objects.get(id=assessment_period_id)
+            else:
+                assessment_period = AssessmentPeriod.objects.filter(is_current=True).first()
+            
+            if not assessment_period:
+                return Response({
+                    'error': 'No assessment period found'
+                }, status=status.HTTP_404_NOT_FOUND)
+            
+            # Get all objectives with their indicators
+            from configurations.models import Objective
+            from indicators.models import TrackedIndicator
+            
+            objectives = Objective.objects.filter(is_active=True).order_by('order')
+            
+            assessment_data = {
+                'org_unit_id': org_unit_id,
+                'org_unit_name': session_data.get('org_unit_name', 'Unknown'),
+                'assessment_period': {
+                    'id': assessment_period.id,
+                    'name': assessment_period.name,
+                    'start_date': assessment_period.start_date,
+                    'end_date': assessment_period.end_date
+                },
+                'objectives': [],
+                'sector_score': None
+            }
+            
+            # Get sector score
+            sector_score = SectorScore.objects.filter(
+                org_unit_id=org_unit_id,
+                assessment_period=assessment_period
+            ).first()
+            
+            if sector_score:
+                assessment_data['sector_score'] = {
+                    'overall_score': sector_score.overall_score,
+                    'score_color': sector_score.score_color,
+                    'score_label': sector_score.score_label,
+                    'total_objectives': sector_score.total_objectives,
+                    'scored_objectives': sector_score.scored_objectives
+                }
+            
+            # Build objectives and indicators structure
+            for objective in objectives:
+                objective_data = {
+                    'id': objective.id,
+                    'name': objective.name,
+                    'code': objective.code,
+                    'description': objective.description,
+                    'color': objective.color,
+                    'order': objective.order,
+                    'indicators': [],
+                    'score': None
+                }
+                
+                # Get objective score
+                obj_score = ObjectiveScore.objects.filter(
+                    objective=objective,
+                    org_unit_id=org_unit_id,
+                    assessment_period=assessment_period
+                ).first()
+                
+                if obj_score:
+                    objective_data['score'] = {
+                        'final_score': obj_score.final_score,
+                        'score_color': obj_score.score_color,
+                        'score_label': obj_score.score_label,
+                        'total_indicators': obj_score.total_indicators,
+                        'scored_indicators': obj_score.scored_indicators
+                    }
+                
+                # Get indicators for this objective
+                indicators = TrackedIndicator.objects.filter(
+                    objective_weights__objective=objective,
+                    is_active=True
+                ).order_by('name')
+                
+                for indicator in indicators:
+                    indicator_data = {
+                        'id': indicator.id,
+                        'name': indicator.name,
+                        'dhis2_uid': indicator.dhis2_uid,
+                        'description': indicator.description,
+                        'target_value': indicator.target_value,
+                        'target_type': indicator.target_type,
+                        'weight': 1.0,  # Default weight
+                        'score': None,
+                        'data_values': {}
+                    }
+                    
+                    # Get indicator weight
+                    weight_mapping = indicator.objective_weights.filter(objective=objective).first()
+                    if weight_mapping:
+                        indicator_data['weight'] = weight_mapping.weight
+                    
+                    # Get indicator score
+                    ind_score = IndicatorScore.objects.filter(
+                        indicator=indicator,
+                        objective=objective,
+                        org_unit_id=org_unit_id,
+                        assessment_period=assessment_period
+                    ).first()
+                    
+                    if ind_score:
+                        indicator_data['score'] = {
+                            'score': ind_score.score,
+                            'score_color': ind_score.score_color,
+                            'score_label': ind_score.score_label,
+                            'current_value': ind_score.current_value,
+                            'previous_value': ind_score.previous_value,
+                            'target_gap': ind_score.target_gap,
+                            'percent_change': ind_score.percent_change,
+                            'is_manual_override': ind_score.is_manual_override
+                        }
+                    
+                    # Get historical data values
+                    data_points = IndicatorData.objects.filter(
+                        indicator=indicator,
+                        org_unit_id=org_unit_id
+                    ).order_by('period')
+                    
+                    for data_point in data_points:
+                        indicator_data['data_values'][data_point.period] = {
+                            'value': data_point.value,
+                            'calculated_value': data_point.calculated_value,
+                            'created_at': data_point.created_at
+                        }
+                    
+                    objective_data['indicators'].append(indicator_data)
+                
+                assessment_data['objectives'].append(objective_data)
+            
+            return Response(assessment_data)
+            
+        except Exception as e:
+            return Response({
+                'success': False,
+                'error': str(e)
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+    
+    @action(detail=False, methods=['get'])
+    def dhis2_periods(self, request):
+        """
+        Get periods from DHIS2 instance
+        """
+        try:
+            # Get session data
+            session_data = get_dhis2_session_data(request.session.session_key)
+            if not session_data:
+                return Response(
+                    {"error": "Incomplete DHIS2 session data"},
+                    status=status.HTTP_401_UNAUTHORIZED
+                )
+            
+            # Create DHIS2 client
+            client = DHIS2ClientFactory.create_client_from_session(
+                session_data.get('instance_url'),
+                request.session.session_key
+            )
+            
+            # Get periods from DHIS2
+            periods = client.get_periods()
+            
+            return Response({
+                "success": True,
+                "data": periods,
+                "total": len(periods)
+            })
+            
+        except Exception as e:
+            logger.error(f"Error fetching DHIS2 periods: {str(e)}")
+            return Response(
+                {"success": False, "error": f"Failed to fetch periods from DHIS2: {str(e)}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+    @action(detail=False, methods=['get'])
+    def dhis2_relative_periods(self, request):
+        """
+        Get relative periods from DHIS2 instance using the correct endpoint
+        """
+        try:
+            # Get session data
+            session_data = get_dhis2_session_data(request.session.session_key)
+            if not session_data:
+                return Response(
+                    {"error": "Incomplete DHIS2 session data"},
+                    status=status.HTTP_401_UNAUTHORIZED
+                )
+            
+            # Create DHIS2 client
+            client = DHIS2ClientFactory.create_client_from_session(
+                session_data.get('instance_url'),
+                request.session.session_key
+            )
+            
+            # Get relative periods from DHIS2 using the correct endpoint
+            relative_periods = client.get_relative_periods()
+            
+            return Response({
+                "success": True,
+                "data": relative_periods,
+                "total": len(relative_periods)
+            })
+            
+        except Exception as e:
+            logger.error(f"Error fetching DHIS2 relative periods: {str(e)}")
+            return Response(
+                {"success": False, "error": f"Failed to fetch relative periods from DHIS2: {str(e)}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+    @action(detail=False, methods=['get'])
+    def dhis2_org_units(self, request):
+        """
+        Get organisation units from DHIS2 instance with optional hierarchy
+        """
+        try:
+            # Get session data
+            session_data = get_dhis2_session_data(request.session.session_key)
+            if not session_data:
+                return Response(
+                    {"error": "Incomplete DHIS2 session data"},
+                    status=status.HTTP_401_UNAUTHORIZED
+                )
+            
+            # Get query parameters
+            user_only = request.GET.get('user_only', 'false').lower() == 'true'
+            include_children = request.GET.get('include_children', 'false').lower() == 'true'
+            hierarchy = request.GET.get('hierarchy', 'false').lower() == 'true'
+            root_id = request.GET.get('root_id')
+            max_depth = int(request.GET.get('max_depth', '3'))
+            
+            # Create DHIS2 client
+            client = DHIS2ClientFactory.create_client_from_session(
+                session_data.get('instance_url'),
+                request.session.session_key
+            )
+            
+            # Get org units from DHIS2 based on parameters
+            if hierarchy:
+                # Get hierarchical structure for tree view
+                org_units = client.get_org_unit_hierarchy(root_id, max_depth)
+            elif user_only:
+                # Get user's accessible org units
+                org_units = client.get_user_accessible_org_units()
+            else:
+                # Get all org units with optional children
+                org_units = client.get_org_units(include_children=include_children)
+            
+            return Response({
+                "success": True,
+                "org_units": org_units,
+                "total": len(org_units)
+            })
+            
+        except Exception as e:
+            logger.error(f"Error fetching DHIS2 org units: {str(e)}")
+            return Response(
+                {"success": False, "error": f"Failed to fetch org units from DHIS2: {str(e)}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+    @action(detail=False, methods=['get'])
+    def generate_periods(self, request):
+        """
+        Generate periods for assessment based on period type and year
+        This addresses DHIS2 API limitations by generating periods client-side
+        """
+        try:
+            from datetime import datetime, timedelta
+            import calendar
+            
+            # Get parameters
+            period_type = request.query_params.get('period_type', 'Yearly')
+            year = int(request.query_params.get('year', datetime.now().year))
+            count = int(request.query_params.get('count', 10))  # Number of periods to generate
+            
+            periods = []
+            
+            if period_type == 'Yearly':
+                # Generate yearly periods
+                for i in range(count):
+                    period_year = year - i
+                    period = {
+                        'id': str(period_year),
+                        'name': str(period_year),
+                        'display_name': str(period_year),
+                        'period_type': 'Yearly',
+                        'start_date': f"{period_year}-01-01",
+                        'end_date': f"{period_year}-12-31",
+                        'source': 'generated'
+                    }
+                    periods.append(period)
+                    
+            elif period_type == 'Quarterly':
+                # Generate quarterly periods
+                quarters = [
+                    ('Q1', 1, 3),
+                    ('Q2', 4, 6),
+                    ('Q3', 7, 9),
+                    ('Q4', 10, 12)
+                ]
+                
+                for i in range(count):
+                    period_year = year - (i // 4)
+                    quarter_idx = i % 4
+                    quarter_name, start_month, end_month = quarters[quarter_idx]
+                    
+                    # Get last day of end month
+                    last_day = calendar.monthrange(period_year, end_month)[1]
+                    
+                    period = {
+                        'id': f"{period_year}{quarter_name}",
+                        'name': f"{period_year} {quarter_name}",
+                        'display_name': f"{period_year} {quarter_name}",
+                        'period_type': 'Quarterly',
+                        'start_date': f"{period_year}-{start_month:02d}-01",
+                        'end_date': f"{period_year}-{end_month:02d}-{last_day}",
+                        'source': 'generated'
+                    }
+                    periods.append(period)
+                    
+            elif period_type == 'Monthly':
+                # Generate monthly periods
+                for i in range(count):
+                    period_year = year - (i // 12)
+                    month = 12 - (i % 12)
+                    if month == 0:
+                        month = 12
+                        period_year -= 1
+                    
+                    # Get last day of month
+                    last_day = calendar.monthrange(period_year, month)[1]
+                    
+                    period = {
+                        'id': f"{period_year}{month:02d}",
+                        'name': f"{period_year} {calendar.month_name[month]}",
+                        'display_name': f"{period_year} {calendar.month_name[month]}",
+                        'period_type': 'Monthly',
+                        'start_date': f"{period_year}-{month:02d}-01",
+                        'end_date': f"{period_year}-{month:02d}-{last_day}",
+                        'source': 'generated'
+                    }
+                    periods.append(period)
+                    
+            elif period_type == 'Half-Yearly':
+                # Generate half-yearly periods
+                half_years = [
+                    ('H1', 1, 6),
+                    ('H2', 7, 12)
+                ]
+                
+                for i in range(count):
+                    period_year = year - (i // 2)
+                    half_year_idx = i % 2
+                    half_year_name, start_month, end_month = half_years[half_year_idx]
+                    
+                    # Get last day of end month
+                    last_day = calendar.monthrange(period_year, end_month)[1]
+                    
+                    period = {
+                        'id': f"{period_year}{half_year_name}",
+                        'name': f"{period_year} {half_year_name}",
+                        'display_name': f"{period_year} {half_year_name}",
+                        'period_type': 'Half-Yearly',
+                        'start_date': f"{period_year}-{start_month:02d}-01",
+                        'end_date': f"{period_year}-{end_month:02d}-{last_day}",
+                        'source': 'generated'
+                    }
+                    periods.append(period)
+            
+            return Response({
+                "success": True,
+                "data": periods,
+                "total": len(periods),
+                "period_type": period_type,
+                "year": year
+            })
+            
+        except Exception as e:
+            logger.error(f"Error generating periods: {str(e)}")
+            return Response(
+                {"success": False, "error": f"Failed to generate periods: {str(e)}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+    @action(detail=False, methods=['get'])
+    def get_period_types(self, request):
+        """
+        Get available period types for assessment
+        """
+        try:
+            period_types = [
+                {
+                    'id': 'Yearly',
+                    'name': 'Yearly',
+                    'display_name': 'Yearly',
+                    'description': 'Annual periods (e.g., 2023, 2024, 2025)'
+                },
+                {
+                    'id': 'Half-Yearly',
+                    'name': 'Half-Yearly',
+                    'display_name': 'Half-Yearly',
+                    'description': 'Six-month periods (e.g., H1 2023, H2 2023)'
+                },
+                {
+                    'id': 'Quarterly',
+                    'name': 'Quarterly',
+                    'display_name': 'Quarterly',
+                    'description': 'Three-month periods (e.g., Q1 2023, Q2 2023)'
+                },
+                {
+                    'id': 'Monthly',
+                    'name': 'Monthly',
+                    'display_name': 'Monthly',
+                    'description': 'Monthly periods (e.g., Jan 2023, Feb 2023)'
+                }
+            ]
+            
+            return Response({
+                "success": True,
+                "data": period_types,
+                "total": len(period_types)
+            })
+            
+        except Exception as e:
+            logger.error(f"Error getting period types: {str(e)}")
+            return Response(
+                {"success": False, "error": f"Failed to get period types: {str(e)}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+    @action(detail=False, methods=['post'])
+    def create_assessment_with_periods(self, request):
+        """
+        Create an assessment with multiple selected periods
+        """
+        try:
+            from configurations.models import AssessmentPeriod
+            
+            # Get parameters from request
+            selected_periods = request.data.get('selected_periods', [])
+            org_unit_ids = request.data.get('org_unit_ids', [])
+            assessment_name = request.data.get('assessment_name', 'Multi-Period Assessment')
+            
+            if not selected_periods or len(selected_periods) < 3:
+                return Response({
+                    'success': False,
+                    'error': 'At least 3 periods must be selected for assessment'
+                }, status=status.HTTP_400_BAD_REQUEST)
+            
+            if not org_unit_ids:
+                return Response({
+                    'success': False,
+                    'error': 'At least one organization unit must be selected'
+                }, status=status.HTTP_400_BAD_REQUEST)
+            
+            # Create assessment periods in database
+            created_periods = []
+            for period_data in selected_periods:
+                period, created = AssessmentPeriod.objects.get_or_create(
+                    name=period_data['name'],
+                    defaults={
+                        'period_type': period_data['period_type'],
+                        'start_date': period_data['start_date'],
+                        'end_date': period_data['end_date'],
+                        'is_active': True
+                    }
+                )
+                created_periods.append(period)
+            
+            # Trigger data sync for all periods
+            sync_service = DataSyncService()
+            
+            # Get user's org unit from session if not specified
+            if not org_unit_ids:
+                session_key = request.session.session_key
+                session_data = get_dhis2_session_data(session_key)
+                if session_data and session_data.get('org_units'):
+                    org_unit_ids = session_data.get('org_units')
+            
+            # Create sync request for all periods
+            sync_request = {
+                'sync_type': 'period',
+                'org_unit_ids': org_unit_ids,
+                'period_start': min(p.start_date for p in created_periods),
+                'period_end': max(p.end_date for p in created_periods),
+                'calculate_scores': True
+            }
+            
+            # Get current DHIS2 user
+            dhis2_user = get_dhis2_user(request)
+            
+            # Perform the sync
+            sync_log = sync_service.sync_data(sync_request, dhis2_user)
+            
+            return Response({
+                'success': True,
+                'message': f'Assessment created with {len(created_periods)} periods',
+                'assessment_name': assessment_name,
+                'periods': [
+                    {
+                        'id': p.id,
+                        'name': p.name,
+                        'period_type': p.period_type,
+                        'start_date': p.start_date,
+                        'end_date': p.end_date
+                    } for p in created_periods
+                ],
+                'org_units': org_unit_ids,
+                'sync_log_id': sync_log.id
+            })
+            
+        except Exception as e:
+            logger.error(f"Error creating assessment with periods: {str(e)}")
+            return Response({
+                'success': False,
+                'error': f'Failed to create assessment: {str(e)}'
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+    @action(detail=False, methods=['get'])
+    def dhis2_period_types(self, request):
+        """
+        Get period types from DHIS2 instance
+        """
+        try:
+            # Get session data
+            session_data = get_dhis2_session_data(request.session.session_key)
+            if not session_data:
+                return Response(
+                    {"error": "Incomplete DHIS2 session data"},
+                    status=status.HTTP_401_UNAUTHORIZED
+                )
+            
+            # Create DHIS2 client
+            client = DHIS2ClientFactory.create_client_from_session(
+                session_data.get('instance_url'),
+                request.session.session_key
+            )
+            
+            # Get period types from DHIS2
+            period_types = client.get_period_types()
+            
+            return Response({
+                "success": True,
+                "data": period_types,
+                "total": len(period_types)
+            })
+            
+        except Exception as e:
+            logger.error(f"Error fetching DHIS2 period types: {str(e)}")
+            return Response(
+                {"success": False, "error": f"Failed to fetch period types from DHIS2: {str(e)}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+    @action(detail=False, methods=['get'])
+    def test_dhis2_connection(self, request):
+        """
+        Test DHIS2 connection and get system info
+        """
+        try:
+            # Get session data
+            session_data = get_dhis2_session_data(request.session.session_key)
+            if not session_data:
+                return Response(
+                    {"error": "Incomplete DHIS2 session data"},
+                    status=status.HTTP_401_UNAUTHORIZED
+                )
+            
+            # Create DHIS2 client
+            client = DHIS2ClientFactory.create_client_from_session(
+                session_data.get('instance_url'),
+                request.session.session_key
+            )
+            
+            # Test connection
+            connection_ok = client.test_connection()
+            
+            # Get system info
+            system_info = client.get_system_info()
+            api_version = client.get_api_version()
+            
+            # Get counts
+            periods_count = len(client.get_periods())
+            org_units_count = len(client.get_org_units())
+            period_types_count = len(client.get_period_types())
+            
+            return Response({
+                "success": True,
+                "connection": {
+                    "status": "connected" if connection_ok else "failed",
+                    "instance_url": session_data.get('instance_url'),
+                    "api_version": api_version
+                },
+                "system_info": system_info,
+                "counts": {
+                    "periods": periods_count,
+                    "org_units": org_units_count,
+                    "period_types": period_types_count
+                }
+            })
+            
+        except Exception as e:
+            logger.error(f"Error testing DHIS2 connection: {str(e)}")
+            return Response(
+                {"success": False, "error": f"Failed to test DHIS2 connection: {str(e)}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )

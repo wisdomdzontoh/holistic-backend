@@ -11,6 +11,8 @@ urlpatterns = [
     
     # Organisation units and authorities
     path('org-units/', views.OrgUnitsView.as_view(), name='org_units'),
+    path('org-units/<str:org_unit_id>/descendants/', views.OrgUnitDescendantsView.as_view(), name='org_unit_descendants'),
+    path('org-units/<str:org_unit_id>/children/', views.OrgUnitChildrenView.as_view(), name='org_unit_children'),
     path('authorities/check/', views.AuthorityCheckView.as_view(), name='authority_check'),
     
     # Health check

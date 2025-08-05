@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 """
-Test script to verify DHIS2 authentication and API calls
+Simple test script to verify DHIS2 authentication and endpoints
 """
 import os
 import sys
@@ -20,17 +20,16 @@ import logging
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
-def test_dhis2_auth():
+def test_dhis2_simple():
     """
-    Test DHIS2 authentication and API calls
+    Simple test of DHIS2 authentication and endpoints
     """
-    # Test configuration - replace with your actual DHIS2 instance
+    # Test configuration
     instance_url = "https://dhims.chimgh.org/dhims"
     username = "admin"  # Replace with actual username
     password = "district"  # Replace with actual password
     
-    print(f"Testing DHIS2 authentication to: {instance_url}")
-    print(f"Username: {username}")
+    print(f"Testing DHIS2 connection to: {instance_url}")
     print("-" * 50)
     
     try:
@@ -68,8 +67,28 @@ def test_dhis2_auth():
         except Exception as e:
             print(f"❌ Organisation units endpoint failed: {str(e)}")
         
+        # Test period types endpoint
+        print("\n4. Testing period types endpoint...")
+        try:
+            period_types = client.get_period_types()
+            print(f"✅ Found {len(period_types)} period types")
+            if period_types:
+                print(f"   Sample period type: {period_types[0].get('name', 'Unknown')}")
+        except Exception as e:
+            print(f"❌ Period types endpoint failed: {str(e)}")
+        
+        # Test relative periods endpoint
+        print("\n5. Testing relative periods endpoint...")
+        try:
+            relative_periods = client.get_relative_periods()
+            print(f"✅ Found {len(relative_periods)} relative periods")
+            if relative_periods:
+                print(f"   Sample relative period: {relative_periods[0].get('name', 'Unknown')}")
+        except Exception as e:
+            print(f"❌ Relative periods endpoint failed: {str(e)}")
+        
         print("\n" + "=" * 50)
-        print("✅ DHIS2 authentication test completed!")
+        print("✅ DHIS2 test completed!")
         
     except Exception as e:
         print(f"❌ Test failed with error: {str(e)}")
@@ -77,4 +96,4 @@ def test_dhis2_auth():
         traceback.print_exc()
 
 if __name__ == "__main__":
-    test_dhis2_auth() 
+    test_dhis2_simple() 

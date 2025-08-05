@@ -1,28 +1,29 @@
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
 from . import views
-from . import dashboard_views
 
-app_name = 'assessments'
-
-# Create router and register viewsets
 router = DefaultRouter()
-router.register(r'sync-logs', views.DataSyncLogViewSet, basename='sync-log')
-router.register(r'indicator-data', views.IndicatorDataViewSet, basename='indicator-data')
-router.register(r'indicator-scores', views.IndicatorScoreViewSet, basename='indicator-score')
-router.register(r'objective-scores', views.ObjectiveScoreViewSet, basename='objective-score')
-router.register(r'sector-scores', views.SectorScoreViewSet, basename='sector-score')
-router.register(r'dashboard', views.AssessmentDashboardViewSet, basename='dashboard')
-router.register(r'management', views.AssessmentManagementViewSet, basename='management')
-
-# Dashboard router
-dashboard_router = DefaultRouter()
-dashboard_router.register(r'dashboard', dashboard_views.DashboardViewSet, basename='dashboard')
+router.register(r'sync-logs', views.DataSyncLogViewSet)
+router.register(r'indicator-data', views.IndicatorDataViewSet)
+router.register(r'indicator-scores', views.IndicatorScoreViewSet)
+router.register(r'objective-scores', views.ObjectiveScoreViewSet)
+router.register(r'sector-scores', views.SectorScoreViewSet)
 
 urlpatterns = [
-    # Include router URLs
     path('', include(router.urls)),
-    
-    # Include dashboard URLs
-    path('', include(dashboard_router.urls)),
+    path('dashboard/', include([
+        path('summary/', views.AssessmentDashboardViewSet.as_view({'get': 'summary'}), name='dashboard-summary'),
+        path('objectives/', views.AssessmentDashboardViewSet.as_view({'get': 'objectives'}), name='dashboard-objectives'),
+        path('indicators/', views.AssessmentDashboardViewSet.as_view({'get': 'indicators'}), name='dashboard-indicators'),
+    ])),
+    path('management/', include([
+        path('calculate-scores/', views.AssessmentManagementViewSet.as_view({'post': 'calculate_scores'}), name='calculate-scores'),
+        path('assessment-report/', views.AssessmentManagementViewSet.as_view({'get': 'assessment_report'}), name='assessment-report'),
+        path('holistic-assessment-data/', views.AssessmentManagementViewSet.as_view({'get': 'holistic_assessment_data'}), name='holistic-assessment-data'),
+        path('dhis2-periods/', views.AssessmentManagementViewSet.as_view({'get': 'dhis2_periods'}), name='dhis2-periods'),
+        path('dhis2-relative-periods/', views.AssessmentManagementViewSet.as_view({'get': 'dhis2_relative_periods'}), name='dhis2-relative-periods'),
+        path('dhis2-org-units/', views.AssessmentManagementViewSet.as_view({'get': 'dhis2_org_units'}), name='dhis2-org-units'),
+        path('dhis2-period-types/', views.AssessmentManagementViewSet.as_view({'get': 'dhis2_period_types'}), name='dhis2-period-types'),
+        path('test-dhis2-connection/', views.AssessmentManagementViewSet.as_view({'get': 'test_dhis2_connection'}), name='test-dhis2-connection'),
+    ])),
 ] 

@@ -12,7 +12,8 @@ logger = logging.getLogger(__name__)
 
 
 def create_dhis2_session(user_info: Dict[str, Any], instance_url: str, 
-                        session_key: str, request=None) -> DHIS2Session:
+                        session_key: str, request=None, dhis2_cookies=None, 
+                        username=None, password=None) -> DHIS2Session:
     """
     Create a new DHIS2 session and store user metadata.
     
@@ -21,12 +22,15 @@ def create_dhis2_session(user_info: Dict[str, Any], instance_url: str,
         instance_url: DHIS2 instance URL
         session_key: Django session key
         request: Django request object (optional)
+        dhis2_cookies: DHIS2 session cookies (optional)
+        username: DHIS2 username (optional)
+        password: DHIS2 password (optional)
         
     Returns:
         DHIS2Session instance
     """
     # Extract user data
-    username = user_info.get('username')
+    username_from_info = user_info.get('username')
     user_id = user_info.get('id')
     org_units = user_info.get('organisationUnits', [])
     authorities = user_info.get('userCredentials', {}).get('userAuthorityGroups', [])
@@ -34,7 +38,7 @@ def create_dhis2_session(user_info: Dict[str, Any], instance_url: str,
     
     # Get or create DHIS2User
     dhis2_user, created = DHIS2User.objects.get_or_create(
-        dhis2_username=username,
+        dhis2_username=username_from_info,
         dhis2_instance_url=instance_url,
         defaults={
             'dhis2_user_id': user_id,
@@ -67,7 +71,7 @@ def create_dhis2_session(user_info: Dict[str, Any], instance_url: str,
     
     session_data = {
         'user_id': dhis2_user.id,
-        'username': username,
+        'username': username_from_info,
         'instance_url': instance_url,
         'org_units': org_units,
         'authorities': authorities,
@@ -75,6 +79,15 @@ def create_dhis2_session(user_info: Dict[str, Any], instance_url: str,
         'created_at': timezone.now().isoformat(),
         'expires_at': session_expiry.isoformat(),
     }
+    
+    # Store DHIS2 cookies if provided
+    if dhis2_cookies:
+        session_data['dhis2_cookies'] = dhis2_cookies
+    
+    # Store Basic Auth credentials if provided (for future API calls)
+    if username and password:
+        session_data['dhis2_username'] = username
+        session_data['dhis2_password'] = password
     
     # Store in Django session
     if request and hasattr(request, 'session'):
@@ -95,7 +108,7 @@ def create_dhis2_session(user_info: Dict[str, Any], instance_url: str,
         user_agent=getattr(request, 'META', {}).get('HTTP_USER_AGENT', ''),
     )
     
-    logger.info(f"Created DHIS2 session for user {username} from {instance_url}")
+    logger.info(f"Created DHIS2 session for user {username_from_info} from {instance_url}")
     return dhis2_session
 
 
@@ -143,6 +156,16 @@ def get_dhis2_session_data(session_key: str) -> Optional[Dict[str, Any]]:
             'created_at': dhis2_session.created_at.isoformat(),
             'expires_at': dhis2_session.expires_at.isoformat(),
         }
+        
+        # Try to get cookies from Django session
+        try:
+            django_session = Session.objects.get(session_key=session_key)
+            django_session_data = django_session.get_decoded()
+            if 'dhis2_auth' in django_session_data and 'dhis2_cookies' in django_session_data['dhis2_auth']:
+                session_data['dhis2_cookies'] = django_session_data['dhis2_auth']['dhis2_cookies']
+                logger.debug(f"Retrieved DHIS2 cookies from Django session {session_key}")
+        except Session.DoesNotExist:
+            logger.warning(f"Django session {session_key} not found")
         
         # Store in cache for future requests
         cache.set(cache_key, session_data, timeout=24 * 60 * 60)

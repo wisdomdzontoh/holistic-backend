@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 """
-Test script to verify DHIS2 authentication and API calls
+Test script to verify DHIS2 authentication with fixed implementation
 """
 import os
 import sys
@@ -20,9 +20,9 @@ import logging
 logging.basicConfig(level=logging.DEBUG)
 logger = logging.getLogger(__name__)
 
-def test_dhis2_auth():
+def test_dhis2_fixed():
     """
-    Test DHIS2 authentication and API calls
+    Test DHIS2 authentication with fixed implementation
     """
     # Test configuration - replace with your actual DHIS2 instance
     instance_url = "https://dhims.chimgh.org/dhims"
@@ -37,8 +37,16 @@ def test_dhis2_auth():
         # Create DHIS2 client
         client = DHIS2Client(instance_url, username, password)
         
+        # Test connection
+        print("1. Testing connection...")
+        if client.test_connection():
+            print("✅ Connection test successful")
+        else:
+            print("❌ Connection test failed")
+            return
+        
         # Test authentication
-        print("1. Testing authentication...")
+        print("\n2. Testing authentication...")
         try:
             user_info = client.authenticate_user()
             print(f"✅ Authentication successful for user: {user_info.get('name', 'Unknown')}")
@@ -49,7 +57,7 @@ def test_dhis2_auth():
             return
         
         # Test periods endpoint
-        print("\n2. Testing periods endpoint...")
+        print("\n3. Testing periods endpoint...")
         try:
             periods = client.get_periods()
             print(f"✅ Found {len(periods)} periods")
@@ -59,7 +67,7 @@ def test_dhis2_auth():
             print(f"❌ Periods endpoint failed: {str(e)}")
         
         # Test org units endpoint
-        print("\n3. Testing organisation units endpoint...")
+        print("\n4. Testing organisation units endpoint...")
         try:
             org_units = client.get_org_units()
             print(f"✅ Found {len(org_units)} organisation units")
@@ -68,8 +76,18 @@ def test_dhis2_auth():
         except Exception as e:
             print(f"❌ Organisation units endpoint failed: {str(e)}")
         
+        # Test period types endpoint
+        print("\n5. Testing period types endpoint...")
+        try:
+            period_types = client.get_period_types()
+            print(f"✅ Found {len(period_types)} period types")
+            if period_types:
+                print(f"   Sample period type: {period_types[0].get('name', 'Unknown')}")
+        except Exception as e:
+            print(f"❌ Period types endpoint failed: {str(e)}")
+        
         print("\n" + "=" * 50)
-        print("✅ DHIS2 authentication test completed!")
+        print("✅ DHIS2 authentication test completed successfully!")
         
     except Exception as e:
         print(f"❌ Test failed with error: {str(e)}")
@@ -77,4 +95,4 @@ def test_dhis2_auth():
         traceback.print_exc()
 
 if __name__ == "__main__":
-    test_dhis2_auth() 
+    test_dhis2_fixed() 

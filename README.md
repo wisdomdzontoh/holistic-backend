@@ -7,16 +7,20 @@
 
 This project transforms the existing Excel-based Holistic Assessment Tool used by the Ghana Health Service (GHS) into a modular, configurable, DHIS2-integrated web application. It authenticates users using DHIS2 Basic Auth and retrieves relevant indicators or data elements based on administrator-defined configurations to calculate performance scores and render dashboards.
 
+**Key Innovation**: The application maintains the exact Excel-based interface while adding web-based advantages like DHIS2 integration, collaborative editing, and real-time scoring.
+
 ---
 
 ## 🎯 2. Objectives
 
 * Authenticate users via **DHIS2 Basic Auth** (no internal user login system).
-* Eliminate manual data entry by fetching indicator values directly from DHIS2.
-* Compute trends, scores, target gaps, and performance categories.
-* Visualize objective and sector performance via interactive dashboards.
-* Support multi-level access (national, regional, district, sub-district, facility) via DHIS2 org unit assignments.
+* **Replicate Excel Interface**: Maintain exact visual layout and functionality of the original Excel tool.
+* Eliminate manual data entry by fetching indicator values directly from DHIS2 (80% of data).
+* Allow manual data entry for non-DHIS2 indicators (20% of data).
+* Compute trends, scores, target gaps, and performance categories automatically.
+* Support multiple assessment periods (monthly, quarterly, half-yearly, yearly).
 * Provide configurable control over indicators, formulas, targets, and weights.
+* Enable save/load functionality for assessment progress.
 * Export reports in Excel, CSV, and PDF with formatting and color codes.
 
 ---
@@ -47,7 +51,43 @@ User identity, permissions, and org units are derived directly from the authenti
 
 ---
 
-### 4.2 Configurable Indicator Registry
+### 4.2 Holistic Assessment Interface
+
+* [ ] **Excel-like Table Interface**: Replicate exact layout from Excel tool
+  * **Column Structure**: 
+    * Column A (#): Row numbers and indicator IDs
+    * Column B (Indicator): Descriptions, objectives, milestones
+    * Columns C-G (Performance Trend): Period columns (e.g., 2020, 2021, 2023, 2024, 2025)
+    * Column H (Change): Calculated percentage change
+    * Column I (P-T Gap Analysis): Performance-to-Target gap
+    * Column J (Target): Target values (various formats)
+    * Column K (Outcome): Assessed score (-2, -1, 0, +1, +2) with color coding
+    * Column U (Remarks): User comments/notes
+  * **Hierarchical Structure**:
+    * Milestones (MS): High-level goals (yellow background)
+    * Objectives: Sub-goals under milestones (orange background)
+    * Indicators: Specific metrics numbered under objectives
+  * **Editable Cells**: Allow manual data entry for non-DHIS2 indicators
+  * **Auto-calculated Cells**: Change, Gap Analysis, Assessed Score
+
+* [ ] **Period Selection**:
+  * Support multiple period types: Monthly, Quarterly, Half-yearly, Yearly
+  * Minimum 3 periods required (e.g., 2021, 2022, 2023 OR Q1-2021, Q1-2022, Q1-2023)
+  * Dynamic column generation based on selected periods
+
+* [ ] **Assessment Workflow**:
+  1. User navigates to Holistic Assessment page
+  2. Selects assessment period type and periods (minimum 3)
+  3. Clicks "Generate Report" to fetch DHIS2 data
+  4. System populates table with DHIS2 data and empty cells for manual entry
+  5. Users can edit non-DHIS2 indicator cells
+  6. Real-time scoring calculation as data is entered
+  7. Save progress functionality
+  8. Export to Excel/PDF with current state
+
+---
+
+### 4.3 Configurable Indicator Registry
 
 * [X] Admin can define **which indicators/data elements** to fetch via UI or Django Admin
 * [X] Each indicator record includes:
@@ -58,17 +98,7 @@ User identity, permissions, and org units are derived directly from the authenti
   * Target value and target type (`increase` or `decrease`)
   * Color-coded scoring rules
   * Active/inactive toggle
-* [X] Indicators marked as “active” are used in all computations and syncs
-
----
-
-### 4.3 Org Unit Tree and Period Selection
-
-* [X] Org unit tree fetched via `/api/organisationUnits`
-* [X] Access limited to user’s root org unit and children
-* [X] Period selector supports:
-  * Monthly, quarterly, yearly
-  * Relative periods (e.g. last 12 months, last 4 quarters)
+* [X] Indicators marked as "active" are used in all computations and syncs
 
 ---
 
@@ -77,6 +107,7 @@ User identity, permissions, and org units are derived directly from the authenti
 * [X] Data pulled from DHIS2 `/api/analytics.json` or other endpoints depending on indicator type
 * [X] Queries are constructed using only UIDs of configured indicators
 * [X] Background tasks (via Celery) handle bulk fetching, retries, and pre-processing
+* [ ] **Conflict Resolution**: Handle conflicts between manual entries and DHIS2 updates
 
 ---
 
@@ -88,41 +119,37 @@ User identity, permissions, and org units are derived directly from the authenti
   * Trend direction
 * [X] Assigns a score from –2 to +2 with rules defined in admin panel
 * [X] Color-coded based on performance (customizable ranges):
-  * Red: Severely Underperforming
-  * Orange: Underperforming
-  * Yellow: Sustained
-  * Light Green: Moderately Performing
-  * Green: Highly Performing
+  * Red: Severely Underperforming (-2)
+  * Orange: Underperforming (-1)
+  * Yellow: Sustained (0)
+  * Light Green: Moderately Performing (+1)
+  * Green: Highly Performing (+2)
 
 ---
 
 ### 4.6 Objective and Sector Aggregation
 
 * [X] Indicators grouped under objectives (e.g., Objective 1, 2, 3)
+* [X] **Milestones**: Additional field for each objective, displayed at the end of objective indicators
 * [X] Objective scores are computed as **median of weighted indicator scores**
 * [X] Overall sector score is weighted average of objective scores
 * [X] Configurable weights via UI or Django Admin
 
 ---
 
-### 4.7 Visualization & Dashboards
+### 4.7 Save/Load Functionality
 
-* [X] Dynamic dashboards for:
-  * Objectives
-  * Org units
-  * Time periods
-* [X] Include:
-  * Gauges and bar charts
-  * Scorecards
-  * Color-coded trend indicators
-  * Interactive drilldowns by org unit and indicator
+* [ ] **Assessment Sessions**: Save current assessment state
+* [ ] **Progress Tracking**: Resume from where user left off
+* [ ] **Version Control**: Track changes and allow rollback
+* [ ] **Collaborative Editing**: Multiple users can work on same assessment
 
 ---
 
 ### 4.8 Export and Reporting
 
 * [X] Exports available in:
-  * Excel (with conditional formatting)
+  * Excel (with conditional formatting matching original)
   * CSV
   * PDF (with charts)
 * [X] Exported reports reflect current filters (org unit, period)
@@ -148,6 +175,7 @@ User identity, permissions, and org units are derived directly from the authenti
   * Logins
   * Score overrides
   * Data fetch errors
+* [ ] **Assessment History**: Track all saved assessments and changes
 
 ---
 
@@ -188,10 +216,24 @@ User identity, permissions, and org units are derived directly from the authenti
    * Store session
    * Redirect user to dashboard scoped to their domain
 
+### Holistic Assessment Flow
+
+1. User navigates to Holistic Assessment page
+2. Selects assessment period type and periods (minimum 3)
+3. Clicks "Generate Report"
+4. System fetches DHIS2 data for configured indicators
+5. Displays Excel-like table with:
+   * Pre-populated DHIS2 data
+   * Empty cells for manual entry
+   * Auto-calculated scores and gaps
+6. User can edit non-DHIS2 indicator cells
+7. Real-time scoring updates
+8. Save progress or export final report
+
 ### Data Sync
 
 1. Background job or user action triggers sync
-2. Pull active indicators’ UIDs from DB
+2. Pull active indicators' UIDs from DB
 3. Send analytics query to DHIS2
 4. Apply any custom formulas or calculations
 5. Compute scores and color codes
@@ -229,6 +271,7 @@ User identity, permissions, and org units are derived directly from the authenti
 | Org unit filters        | Derived from DHIS2 user metadata         |
 | Visualization settings  | JSON or database-driven configuration    |
 | Export formatting rules | Config in DB or YAML file                |
+| Assessment periods      | User selection (monthly, quarterly, etc.) |
 
 ---
 
@@ -239,3 +282,62 @@ User identity, permissions, and org units are derived directly from the authenti
 * Add support for offline mode or PWA
 * Enable AI-based anomaly detection on performance trends
 * Real-time notifications for underperformance
+* Advanced collaboration features (comments, approvals)
+* Mobile-responsive assessment interface
+* Integration with other health information systems
+
+---
+
+## 🎨 10. UI/UX Requirements
+
+### Navigation Structure
+- **Dashboard**: Overview, reports, analytics
+- **Holistic Assessment**: Main Excel-like interface
+- **Configuration**: Admin settings (role-based access)
+
+### Holistic Assessment Interface
+- **Exact Excel replication** with same visual layout
+- **Editable cells** with validation and real-time feedback
+- **Color coding** for scores and performance levels
+- **Hierarchical grouping** (Milestones → Objectives → Indicators)
+- **Period selection** with dynamic column generation
+- **Save/Load functionality** with progress indicators
+- **Export options** with formatting preservation
+
+### Responsive Design
+- **Desktop-first** for assessment interface (Excel-like experience)
+- **Mobile-responsive** for dashboard and navigation
+- **Touch-friendly** controls where appropriate
+
+---
+
+## 🔄 11. Development Phases
+
+### Phase 1: Core Infrastructure ✅
+- [X] Django backend setup
+- [X] DHIS2 authentication
+- [X] Basic dashboard pages
+- [X] UI component library
+
+### Phase 2: Holistic Assessment Interface 🔄
+- [ ] Create Holistic Assessment page
+- [ ] Build Excel-like table component
+- [ ] Implement period selection
+- [ ] Add editable cells functionality
+- [ ] Real-time scoring calculation
+
+### Phase 3: Backend Integration
+- [ ] DHIS2 data fetching for configured indicators
+- [ ] Scoring logic implementation
+- [ ] Save/Load functionality
+- [ ] Export system
+
+### Phase 4: Advanced Features
+- [ ] Collaborative editing
+- [ ] Version control
+- [ ] Advanced analytics
+- [ ] Mobile optimization
+
+---
+
+This roadmap ensures you're building foundational services first (auth, config), then moving into domain-specific logic (indicators, scoring), and finally into visualizations, exports, and automation.

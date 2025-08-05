@@ -86,6 +86,13 @@ class LoginView(APIView):
             # Authenticate user
             user_info = client.authenticate_user()
             
+            # Extract DHIS2 cookies from the client session
+            dhis2_cookies = {}
+            for cookie in client.session.cookies:
+                dhis2_cookies[cookie.name] = cookie.value
+            
+            logger.info(f"Extracted {len(dhis2_cookies)} DHIS2 cookies from session")
+            
             # Create session
             session_key = request.session.session_key
             if not session_key:
@@ -97,7 +104,10 @@ class LoginView(APIView):
                     user_info=user_info,
                     instance_url=instance_url,
                     session_key=session_key,
-                    request=request
+                    request=request,
+                    dhis2_cookies=dhis2_cookies,
+                    username=username,
+                    password=password
                 )
             except IntegrityError as e:
                 logger.error(f"Database integrity error during session creation: {str(e)}")
@@ -124,8 +134,10 @@ class LoginView(APIView):
                 'success': True,
                 'message': 'Login successful',
                 'user': user_serializer.data,
-                'session_key': session_key,
-                'expires_at': dhis2_session.expires_at
+                'session': {
+                    'expiresAt': dhis2_session.expires_at.isoformat(),
+                    'dhis2Instance': instance_url
+                }
             }
             
             logger.info(f"Successful login for user {username} from {instance_url}")
@@ -235,7 +247,7 @@ class SessionStatusView(APIView):
         if not session_key:
             return Response(
                 {
-                    'is_authenticated': False,
+                    'isAuthenticated': False,
                     'message': 'No active session'
                 },
                 status=status.HTTP_401_UNAUTHORIZED
@@ -245,7 +257,7 @@ class SessionStatusView(APIView):
         if not is_dhis2_authenticated(session_key):
             return Response(
                 {
-                    'is_authenticated': False,
+                    'isAuthenticated': False,
                     'message': 'Session expired or invalid'
                 },
                 status=status.HTTP_401_UNAUTHORIZED
@@ -258,7 +270,7 @@ class SessionStatusView(APIView):
         if not session_data or not dhis2_user:
             return Response(
                 {
-                    'is_authenticated': False,
+                    'isAuthenticated': False,
                     'message': 'Session data not found'
                 },
                 status=status.HTTP_401_UNAUTHORIZED
@@ -269,9 +281,12 @@ class SessionStatusView(APIView):
         org_units = get_user_org_units(session_key)
         
         response_data = {
-            'is_authenticated': True,
+            'isAuthenticated': True,
             'user': user_serializer.data,
-            'session_expires_at': session_data['expires_at'],
+            'session': {
+                'expiresAt': session_data['expires_at'],
+                'dhis2Instance': session_data['instance_url']
+            },
             'org_units': org_units,
             'authorities': session_data.get('authorities', [])
         }
@@ -327,6 +342,110 @@ class OrgUnitsView(APIView):
                 {
                     'success': False,
                     'message': 'Error fetching organisation units'
+                },
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+
+class OrgUnitDescendantsView(APIView):
+    """
+    View to get all descendants of an organisation unit.
+    """
+    
+    def get(self, request, org_unit_id):
+        """
+        Get all descendants of an organisation unit.
+        """
+        session_key = request.session.session_key
+        
+        if not session_key or not is_dhis2_authenticated(session_key):
+            return Response(
+                {
+                    'success': False,
+                    'message': 'Authentication required'
+                },
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+        
+        try:
+            session_data = get_dhis2_session_data(session_key)
+            
+            # Create DHIS2 client
+            client = DHIS2Client(
+                instance_url=session_data['instance_url'],
+                session_key=session_key
+            )
+            
+            # Get descendants
+            descendants = client.get_org_unit_descendants(org_unit_id)
+            
+            return Response(
+                {
+                    'success': True,
+                    'descendants': descendants,
+                    'total': len(descendants)
+                },
+                status=status.HTTP_200_OK
+            )
+            
+        except Exception as e:
+            logger.error(f"Error fetching org unit descendants: {str(e)}")
+            return Response(
+                {
+                    'success': False,
+                    'message': 'Error fetching organisation unit descendants'
+                },
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+
+class OrgUnitChildrenView(APIView):
+    """
+    View to get immediate children of an organisation unit.
+    """
+    
+    def get(self, request, org_unit_id):
+        """
+        Get immediate children of an organisation unit.
+        """
+        session_key = request.session.session_key
+        
+        if not session_key or not is_dhis2_authenticated(session_key):
+            return Response(
+                {
+                    'success': False,
+                    'message': 'Authentication required'
+                },
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+        
+        try:
+            session_data = get_dhis2_session_data(session_key)
+            
+            # Create DHIS2 client
+            client = DHIS2Client(
+                instance_url=session_data['instance_url'],
+                session_key=session_key
+            )
+            
+            # Get children
+            children = client.get_org_unit_children(org_unit_id)
+            
+            return Response(
+                {
+                    'success': True,
+                    'children': children,
+                    'total': len(children)
+                },
+                status=status.HTTP_200_OK
+            )
+            
+        except Exception as e:
+            logger.error(f"Error fetching org unit children: {str(e)}")
+            return Response(
+                {
+                    'success': False,
+                    'message': 'Error fetching organisation unit children'
                 },
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )

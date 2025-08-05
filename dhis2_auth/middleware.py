@@ -36,12 +36,12 @@ class DHIS2SessionMiddleware:
         
         # Check if DHIS2 session is valid
         if not is_dhis2_authenticated(session_key):
-            # Session is invalid, clear it
-            logout_dhis2_user(session_key)
-            request.session.flush()
-            
-            # Return error response for API requests
+            # Only clear session for API requests, not for all requests
             if request.path.startswith('/api/'):
+                # Session is invalid, clear it
+                logout_dhis2_user(session_key)
+                request.session.flush()
+                
                 return JsonResponse(
                     {
                         'success': False,

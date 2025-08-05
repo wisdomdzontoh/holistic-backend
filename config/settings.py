@@ -124,12 +124,21 @@ DATABASES = {
 #CORS Settings
 CORS_ALLOW_ALL_ORIGINS = bool(DEBUG)
 CORS_ALLOW_CREDENTIALS = True
+CORS_ALLOWED_ORIGINS = [
+    "http://localhost:3000",
+    "http://localhost:3003",
+    "http://127.0.0.1:3000",
+    "http://127.0.0.1:3003",
+]
+CORS_ALLOWED_CREDENTIALS = True
 
 
 #DRF Settings
 REST_FRAMEWORK = {
-    'DEFAULT_AUTHENTICATION_CLASSES': [],
-    'DEFAULT_PERMISSION_CLASSES': ['rest_framework.permissions.IsAuthenticatedOrReadOnly'],
+    'DEFAULT_AUTHENTICATION_CLASSES': [
+        'dhis2_auth.authentication.DHIS2SessionAuthentication',
+    ],
+    'DEFAULT_PERMISSION_CLASSES': ['dhis2_auth.permissions.DHIS2AuthenticatedOrReadOnly'],
     'DEFAULT_RENDERER_CLASSES': [
         'rest_framework.renderers.JSONRenderer',
     ],
@@ -203,3 +212,20 @@ CELERY_RESULT_BACKEND = CELERY_BROKER_URL
 
 #DHIS2 Settings
 DEFAULT_DHIS2_URL = os.getenv('DEFAULT_DHIS2_INSTANCE', 'https://dhims.chimgh.org/dhims')
+
+# Session Configuration
+SESSION_ENGINE = 'django.contrib.sessions.backends.db'
+SESSION_COOKIE_AGE = 24 * 60 * 60  # 24 hours
+SESSION_COOKIE_SECURE = False  # Set to True in production with HTTPS
+SESSION_COOKIE_HTTPONLY = True
+SESSION_COOKIE_SAMESITE = 'Lax'  # Allows cross-site requests for CORS
+SESSION_SAVE_EVERY_REQUEST = True  # Save session on every request
+SESSION_EXPIRE_AT_BROWSER_CLOSE = False  # Keep session alive after browser close
+
+# Cache Configuration (for session caching)
+CACHES = {
+    'default': {
+        'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
+        'LOCATION': 'unique-snowflake',
+    }
+}
