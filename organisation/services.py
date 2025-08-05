@@ -22,7 +22,7 @@ class OrgUnitSyncService:
     def __init__(self, dhis2_client=None):
         self.client = dhis2_client
     
-    def sync_org_units(self, sync_request, dhis2_user=None):
+    def sync_org_units(self, sync_request, dhis2_user=None, session_key=None):
         """
         Sync org units from DHIS2 based on the sync request
         """
@@ -35,7 +35,10 @@ class OrgUnitSyncService:
         try:
             # Initialize DHIS2 client if not provided
             if not self.client:
-                session_data = get_dhis2_session_data()
+                if not session_key:
+                    raise Exception("Session key is required for DHIS2 authentication")
+                
+                session_data = get_dhis2_session_data(session_key)
                 if not session_data:
                     raise Exception("No active DHIS2 session")
                 

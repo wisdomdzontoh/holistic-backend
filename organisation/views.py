@@ -321,7 +321,7 @@ class OrgUnitSyncLogViewSet(viewsets.ModelViewSet):
             sync_service = OrgUnitSyncService()
             
             # Perform the sync
-            sync_log = sync_service.sync_org_units(serializer.validated_data, dhis2_user)
+            sync_log = sync_service.sync_org_units(serializer.validated_data, dhis2_user, request.session.session_key)
             
             return Response({
                 'success': True,

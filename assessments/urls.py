@@ -20,6 +20,7 @@ urlpatterns = [
         path('calculate-scores/', views.AssessmentManagementViewSet.as_view({'post': 'calculate_scores'}), name='calculate-scores'),
         path('assessment-report/', views.AssessmentManagementViewSet.as_view({'get': 'assessment_report'}), name='assessment-report'),
         path('holistic-assessment-data/', views.AssessmentManagementViewSet.as_view({'get': 'holistic_assessment_data'}), name='holistic-assessment-data'),
+        path('multi-period-assessment-data/', views.AssessmentManagementViewSet.as_view({'post': 'multi_period_assessment_data'}), name='multi-period-assessment-data'),
         path('dhis2-periods/', views.AssessmentManagementViewSet.as_view({'get': 'dhis2_periods'}), name='dhis2-periods'),
         path('dhis2-relative-periods/', views.AssessmentManagementViewSet.as_view({'get': 'dhis2_relative_periods'}), name='dhis2-relative-periods'),
         path('dhis2-org-units/', views.AssessmentManagementViewSet.as_view({'get': 'dhis2_org_units'}), name='dhis2-org-units'),

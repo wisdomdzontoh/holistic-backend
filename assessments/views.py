@@ -64,7 +64,7 @@ class DataSyncLogViewSet(viewsets.ModelViewSet):
             sync_service = DataSyncService()
             
             # Perform the sync
-            sync_log = sync_service.sync_data(serializer.validated_data, dhis2_user)
+            sync_log = sync_service.sync_data(serializer.validated_data, dhis2_user, request.session.session_key)
             
             return Response({
                 'success': True,
@@ -1041,7 +1041,7 @@ class AssessmentManagementViewSet(viewsets.ViewSet):
             dhis2_user = get_dhis2_user(request)
             
             # Perform the sync
-            sync_log = sync_service.sync_data(sync_request, dhis2_user)
+            sync_log = sync_service.sync_data(sync_request, dhis2_user, request.session.session_key)
             
             return Response({
                 'success': True,
@@ -1102,6 +1102,192 @@ class AssessmentManagementViewSet(viewsets.ViewSet):
                 {"success": False, "error": f"Failed to fetch period types from DHIS2: {str(e)}"},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
+
+    @action(detail=False, methods=['post'])
+    def multi_period_assessment_data(self, request):
+        """
+        Get assessment data for multiple periods
+        """
+        try:
+            from configurations.models import AssessmentPeriod
+            
+            # Get parameters from request
+            org_unit_ids = request.data.get('org_unit_ids', [])
+            periods = request.data.get('periods', [])
+            include_scores = request.data.get('include_scores', True)
+            
+            if not org_unit_ids:
+                return Response({
+                    'success': False,
+                    'error': 'No organization units specified'
+                }, status=status.HTTP_400_BAD_REQUEST)
+            
+            if not periods:
+                return Response({
+                    'success': False,
+                    'error': 'No periods specified'
+                }, status=status.HTTP_400_BAD_REQUEST)
+            
+            # Get user's org unit from session if not specified
+            if not org_unit_ids:
+                session_key = request.session.session_key
+                session_data = get_dhis2_session_data(session_key)
+                if session_data and session_data.get('org_units'):
+                    org_unit_ids = session_data.get('org_units')
+            
+            # Get all objectives with their indicators
+            from configurations.models import Objective
+            from indicators.models import TrackedIndicator
+            
+            objectives = Objective.objects.filter(is_active=True).order_by('order')
+            
+            # Build assessment data for each period
+            assessment_data_list = []
+            
+            for period_data in periods:
+                # Get or create assessment period
+                period, created = AssessmentPeriod.objects.get_or_create(
+                    name=period_data['name'],
+                    defaults={
+                        'period_type': period_data['period_type'],
+                        'start_date': period_data['start_date'],
+                        'end_date': period_data['end_date'],
+                        'is_active': True
+                    }
+                )
+                
+                # Build assessment data for this period
+                assessment_data = {
+                    'org_unit_id': org_unit_ids[0] if org_unit_ids else 'unknown',
+                    'org_unit_name': 'Unknown',  # Will be updated from session
+                    'assessment_period': {
+                        'id': period.id,
+                        'name': period.name,
+                        'start_date': period.start_date,
+                        'end_date': period.end_date
+                    },
+                    'objectives': [],
+                    'sector_score': None
+                }
+                
+                # Get sector score if requested
+                if include_scores:
+                    sector_score = SectorScore.objects.filter(
+                        org_unit_id=org_unit_ids[0],
+                        assessment_period=period
+                    ).first()
+                    
+                    if sector_score:
+                        assessment_data['sector_score'] = {
+                            'overall_score': sector_score.overall_score,
+                            'score_color': sector_score.score_color,
+                            'score_label': sector_score.score_label,
+                            'total_objectives': sector_score.total_objectives,
+                            'scored_objectives': sector_score.scored_objectives
+                        }
+                
+                # Build objectives and indicators structure
+                for objective in objectives:
+                    objective_data = {
+                        'id': objective.id,
+                        'name': objective.name,
+                        'code': objective.code,
+                        'description': objective.description,
+                        'color': objective.color,
+                        'order': objective.order,
+                        'indicators': [],
+                        'score': None
+                    }
+                    
+                    # Get objective score if requested
+                    if include_scores:
+                        obj_score = ObjectiveScore.objects.filter(
+                            objective=objective,
+                            org_unit_id=org_unit_ids[0],
+                            assessment_period=period
+                        ).first()
+                        
+                        if obj_score:
+                            objective_data['score'] = {
+                                'final_score': obj_score.final_score,
+                                'score_color': obj_score.score_color,
+                                'score_label': obj_score.score_label,
+                                'total_indicators': obj_score.total_indicators,
+                                'scored_indicators': obj_score.scored_indicators
+                            }
+                    
+                    # Get indicators for this objective
+                    indicators = TrackedIndicator.objects.filter(
+                        objective_weights__objective=objective,
+                        is_active=True
+                    ).order_by('name')
+                    
+                    for indicator in indicators:
+                        indicator_data = {
+                            'id': indicator.id,
+                            'name': indicator.name,
+                            'dhis2_uid': indicator.dhis2_uid,
+                            'description': indicator.description,
+                            'target_value': indicator.target_value,
+                            'target_type': indicator.target_type,
+                            'weight': 1.0,  # Default weight
+                            'score': None,
+                            'data_values': {}
+                        }
+                        
+                        # Get indicator weight
+                        weight_mapping = indicator.objective_weights.filter(objective=objective).first()
+                        if weight_mapping:
+                            indicator_data['weight'] = weight_mapping.weight
+                        
+                        # Get indicator score if requested
+                        if include_scores:
+                            ind_score = IndicatorScore.objects.filter(
+                                indicator=indicator,
+                                objective=objective,
+                                org_unit_id=org_unit_ids[0],
+                                assessment_period=period
+                            ).first()
+                            
+                            if ind_score:
+                                indicator_data['score'] = {
+                                    'score': ind_score.score,
+                                    'score_color': ind_score.score_color,
+                                    'score_label': ind_score.score_label,
+                                    'current_value': ind_score.current_value,
+                                    'previous_value': ind_score.previous_value,
+                                    'target_gap': ind_score.target_gap,
+                                    'percent_change': ind_score.percent_change,
+                                    'is_manual_override': ind_score.is_manual_override
+                                }
+                        
+                        # Get historical data values
+                        data_points = IndicatorData.objects.filter(
+                            indicator=indicator,
+                            org_unit_id=org_unit_ids[0]
+                        ).order_by('period')
+                        
+                        for data_point in data_points:
+                            indicator_data['data_values'][data_point.period] = {
+                                'value': data_point.value,
+                                'calculated_value': data_point.calculated_value,
+                                'created_at': data_point.created_at
+                            }
+                        
+                        objective_data['indicators'].append(indicator_data)
+                    
+                    assessment_data['objectives'].append(objective_data)
+                
+                assessment_data_list.append(assessment_data)
+            
+            return Response(assessment_data_list)
+            
+        except Exception as e:
+            logger.error(f"Error getting multi-period assessment data: {str(e)}")
+            return Response({
+                'success': False,
+                'error': f'Failed to get assessment data: {str(e)}'
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
     @action(detail=False, methods=['get'])
     def test_dhis2_connection(self, request):
