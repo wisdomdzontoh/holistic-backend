@@ -30,11 +30,11 @@ def test_dhis2_data_availability():
     """Test what data is available in DHIS2 demo instance"""
     print("Testing DHIS2 data availability...")
     
-    # Create DHIS2 client with demo credentials
+    # Create DHIS2 client with the actual instance URL used in the application
     dhis2_client = DHIS2Client(
-        instance_url='https://dhis2.org/demo',
-        username='admin',
-        password='district'
+        instance_url='https://dhims.chimgh.org/dhims',
+        username='Demo',
+        password='Ghana@2020'
     )
     
     try:
@@ -64,10 +64,10 @@ def test_dhis2_data_availability():
         
         # Get org units
         print("\n4. Getting org units...")
-        org_units = dhis2_client.get_org_units(limit=5)
+        org_units = dhis2_client.get_org_units()
         print(f"Found {len(org_units)} org units (showing first 5)")
         
-        for org_unit in org_units:
+        for org_unit in org_units[:5]:
             print(f"  - {org_unit.get('name', 'Unknown')} ({org_unit.get('id', 'Unknown')})")
         
         # Test analytics with a recent period

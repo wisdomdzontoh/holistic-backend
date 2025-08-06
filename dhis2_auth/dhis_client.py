@@ -744,6 +744,12 @@ class DHIS2Client:
                 logger.error(f"Response status code: {response.status_code}")
                 logger.error(f"Response headers: {dict(response.headers)}")
                 logger.error(f"Full response content: {response.text}")
+                
+                # Check if response is HTML (login page)
+                if response.text.strip().startswith('<!DOCTYPE html>') or '<html' in response.text.lower():
+                    logger.error("DHIS2 returned HTML instead of JSON - authentication may have failed")
+                    raise requests.RequestException("Authentication failed - DHIS2 returned login page instead of JSON")
+                
                 raise requests.RequestException(f"Invalid JSON response: {str(e)}")
             
         except requests.RequestException as e:
@@ -784,8 +790,8 @@ class DHIS2Client:
         try:
             endpoint = "api/analytics"
             
-            # Build dimensions list
-            dimensions = []
+            # Build parameters according to DHIS2 Analytics API specification
+            params = {}
             
             # Data dimension (dx) - combine all data types
             dx_items = []
@@ -798,30 +804,35 @@ class DHIS2Client:
             if program_indicators:
                 dx_items.extend(program_indicators)
             
+            # Build dimensions list - each dimension should be a separate parameter
+            dimensions = []
+            
             if dx_items:
-                dx_dimension = f"dx:{';'.join(dx_items)}"
-                dimensions.append(dx_dimension)
+                dimensions.append(f"dx:{';'.join(dx_items)}")
             
-            # Period dimension (pe)
             if periods:
-                pe_dimension = f"pe:{';'.join(periods)}"
-                dimensions.append(pe_dimension)
+                dimensions.append(f"pe:{';'.join(periods)}")
             
-            # Org unit dimension (ou)
             if org_units:
-                ou_dimension = f"ou:{';'.join(org_units)}"
-                dimensions.append(ou_dimension)
+                dimensions.append(f"ou:{';'.join(org_units)}")
             
-            # Build parameters
-            params = {
-                "dimension": dimensions,
-                "skipData": str(skip_data).lower(),
-                "skipMeta": str(skip_meta).lower(),
-                "skipRounding": str(skip_rounding).lower(),
-                "showHierarchy": str(show_hierarchy).lower(),
-                "includeNumDen": str(include_num_den).lower(),
-                "outputType": output_type
-            }
+            # Set dimensions as a list (requests will handle multiple parameters with same name)
+            if dimensions:
+                params["dimension"] = dimensions
+            
+            # Additional parameters
+            if skip_data:
+                params["skipData"] = "true"
+            if skip_meta:
+                params["skipMeta"] = "true"
+            if skip_rounding:
+                params["skipRounding"] = "true"
+            if not show_hierarchy:
+                params["showHierarchy"] = "false"
+            if not include_num_den:
+                params["includeNumDen"] = "false"
+            if output_type != "EVENT":
+                params["outputType"] = output_type
             
             logger.info(f"Making DHIS2 analytics request to {endpoint}")
             logger.info(f"Request parameters: {params}")

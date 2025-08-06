@@ -1,122 +1,97 @@
 #!/usr/bin/env python
 """
-Test script to verify the strptime error fix
+Test script to test the sync fix with a single indicator
 """
 import os
 import sys
 import django
-from datetime import date
+import logging
+from datetime import datetime
 
 # Add the project directory to the Python path
 sys.path.append(os.path.dirname(os.path.abspath(__file__)))
+
+# Configure logging to show detailed output
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.StreamHandler(sys.stdout)
+    ]
+)
 
 # Set up Django
 os.environ.setdefault('DJANGO_SETTINGS_MODULE', 'config.settings')
 django.setup()
 
 from assessments.services import DataSyncService
-from django.contrib.auth import get_user_model
-from dhis2_auth.session import create_dhis2_session
+from dhis2_auth.dhis_client import DHIS2Client
+from assessments.models import DataSyncLog, IndicatorData
 
-User = get_user_model()
-
-def test_sync_with_date_objects():
-    """Test sync with datetime.date objects"""
-    print("Testing sync with datetime.date objects...")
-    
-    service = DataSyncService()
-    sync_request = {
-        'period_start': date(2024, 1, 1),
-        'period_end': date(2024, 12, 31),
-        'sync_type': 'FULL'
-    }
+def test_sync_fix():
+    """Test the sync fix with a single indicator"""
+    print("Testing sync fix...")
     
     try:
-        # Test the _get_periods_to_sync method directly
-        periods = service._get_periods_to_sync(sync_request)
-        print(f"✓ Successfully generated {len(periods)} periods from date objects")
-        print(f"  First 5 periods: {periods[:5]}")
-        return True
-    except Exception as e:
-        print(f"✗ Error with date objects: {e}")
-        return False
-
-def test_sync_with_strings():
-    """Test sync with string dates"""
-    print("\nTesting sync with string dates...")
-    
-    service = DataSyncService()
-    sync_request = {
-        'period_start': '2024-01-01',
-        'period_end': '2024-12-31',
-        'sync_type': 'FULL'
-    }
-    
-    try:
-        # Test the _get_periods_to_sync method directly
-        periods = service._get_periods_to_sync(sync_request)
-        print(f"✓ Successfully generated {len(periods)} periods from strings")
-        print(f"  First 5 periods: {periods[:5]}")
-        return True
-    except Exception as e:
-        print(f"✗ Error with strings: {e}")
-        return False
-
-def test_full_sync_process():
-    """Test the full sync process with authentication"""
-    print("\nTesting full sync process...")
-    
-    # Get or create a test user
-    user, created = User.objects.get_or_create(
-        username='test_user',
-        defaults={
-            'email': 'test@example.com',
-            'is_staff': True
+        # Create DHIS2 client
+        dhis2_client = DHIS2Client(
+            instance_url='https://dhims.chimgh.org/dhims',
+            username='Demo',
+            password='Ghana@2020'
+        )
+        
+        # Create sync service
+        sync_service = DataSyncService(dhis2_client)
+        
+        # Test with a single indicator that we know has data
+        sync_request = {
+            'sync_type': 'indicator',
+            'dhis2_instance_url': 'https://dhims.chimgh.org/dhims',
+            'org_unit_ids': ['pNf9RX5OfpD'],
+            'indicator_uids': ['sJPfP23pR4G'],  # The indicator we tested
+            'period_start': '2023-01-01',
+            'period_end': '2023-12-31',
+            'calculate_scores': False
         }
-    )
-    
-    # Create a DHIS2 session for the user
-    session_data = {
-        'instance_url': 'https://dhims.chimgh.org/dhims',
-        'username': 'admin',
-        'password': 'district'
-    }
-    
-    session_key = create_dhis2_session(user, session_data)
-    print(f"✓ Created DHIS2 session: {session_key}")
-    
-    service = DataSyncService()
-    sync_request = {
-        'period_start': date(2024, 1, 1),
-        'period_end': date(2024, 12, 31),
-        'sync_type': 'FULL'
-    }
-    
-    try:
-        # This should not raise the strptime error anymore
-        sync_log = service.sync_data(sync_request, user, session_key)
-        print(f"✓ Successfully created sync log: {sync_log.id}")
-        print(f"  Indicator UIDs: {sync_log.indicator_uids}")
+        
+        print("Starting sync with single indicator...")
+        sync_log = sync_service.sync_data(sync_request)
+        
+        print(f"\nSync completed:")
+        print(f"  Sync ID: {sync_log.id}")
+        print(f"  Status: {sync_log.status}")
         print(f"  Total indicators: {sync_log.total_indicators}")
-        return True
+        print(f"  Successful indicators: {sync_log.successful_indicators}")
+        print(f"  Failed indicators: {sync_log.failed_indicators}")
+        print(f"  Total data points: {sync_log.total_data_points}")
+        
+        # Check if data points were created
+        data_points = IndicatorData.objects.filter(sync_log=sync_log)
+        print(f"\nData points created: {data_points.count()}")
+        
+        for data_point in data_points:
+            print(f"  - {data_point.indicator.name}: {data_point.value} for {data_point.org_unit_name} ({data_point.period})")
+        
+        # Test the extraction logic directly
+        print(f"\nTesting extraction logic directly...")
+        
+        # Get the indicator object
+        from indicators.models import TrackedIndicator
+        indicator = TrackedIndicator.objects.get(dhis2_uid='sJPfP23pR4G')
+        
+        # Test with the same parameters
+        value = sync_service._fetch_indicator_data(
+            indicator=indicator,
+            org_unit_id='pNf9RX5OfpD',
+            period='2023'
+        )
+        
+        print(f"Direct extraction result: {value}")
+        
     except Exception as e:
-        print(f"✗ Error in full sync process: {e}")
-        return False
+        print(f"Error during testing: {str(e)}")
+        import traceback
+        traceback.print_exc()
 
 if __name__ == '__main__':
-    print("Testing strptime error fix...")
-    
-    success1 = test_sync_with_date_objects()
-    success2 = test_sync_with_strings()
-    success3 = test_full_sync_process()
-    
-    print(f"\n{'='*50}")
-    print("Test Results:")
-    print(f"Date objects test: {'✓ PASSED' if success1 else '✗ FAILED'}")
-    print(f"String dates test: {'✓ PASSED' if success2 else '✗ FAILED'}")
-    print(f"Full sync test: {'✓ PASSED' if success3 else '✗ FAILED'}")
-    
-    if all([success1, success2, success3]):
-        print("\n🎉 All tests passed! The strptime error has been fixed.")
-    else:
-        print("\n❌ Some tests failed. Please check the errors above.") 
+    test_sync_fix() 

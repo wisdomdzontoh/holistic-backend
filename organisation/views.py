@@ -21,7 +21,7 @@ from .serializers import (
     OrgUnitSearchSerializer
 )
 from .services import OrgUnitSyncService, AccessControlService, OrgUnitHierarchyService
-from dhis2_auth.session import get_dhis2_user
+from dhis2_auth.session import get_dhis2_user, get_dhis2_user_from_request
 
 
 class OrgUnitLevelViewSet(viewsets.ModelViewSet):
@@ -245,7 +245,7 @@ class UserOrgUnitAccessViewSet(viewsets.ModelViewSet):
                 include_descendants=data.get('include_descendants', True),
                 is_primary=data.get('is_primary', False),
                 notes=data.get('notes', ''),
-                granted_by=get_dhis2_user(request)
+                granted_by=get_dhis2_user_from_request(request)
             )
             
             return Response({
@@ -315,7 +315,7 @@ class OrgUnitSyncLogViewSet(viewsets.ModelViewSet):
         
         try:
             # Get current DHIS2 user
-            dhis2_user = get_dhis2_user(request)
+            dhis2_user = get_dhis2_user_from_request(request)
             
             # Initialize sync service
             sync_service = OrgUnitSyncService()

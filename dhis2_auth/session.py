@@ -210,6 +210,22 @@ def get_dhis2_user(session_key: str) -> Optional[DHIS2User]:
         return None
 
 
+def get_dhis2_user_from_request(request) -> Optional[DHIS2User]:
+    """
+    Get DHIS2User instance from Django request object.
+    
+    Args:
+        request: Django request object
+        
+    Returns:
+        DHIS2User instance or None
+    """
+    if not hasattr(request, 'session') or not request.session.session_key:
+        return None
+    
+    return get_dhis2_user(request.session.session_key)
+
+
 def logout_dhis2_user(session_key: str) -> bool:
     """
     Logout DHIS2 user by invalidating session.

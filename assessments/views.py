@@ -23,7 +23,7 @@ from .serializers import (
     AssessmentReportSerializer
 )
 from .services import DataSyncService, ScoreCalculationService, DashboardService
-from dhis2_auth.session import get_dhis2_user, get_dhis2_session_data
+from dhis2_auth.session import get_dhis2_user, get_dhis2_user_from_request, get_dhis2_session_data
 from dhis2_auth.dhis_client import DHIS2ClientFactory
 
 logger = logging.getLogger(__name__)
@@ -58,7 +58,7 @@ class DataSyncLogViewSet(viewsets.ModelViewSet):
         
         try:
             # Get current DHIS2 user
-            dhis2_user = get_dhis2_user(request)
+            dhis2_user = get_dhis2_user_from_request(request)
             
             # Initialize sync service
             sync_service = DataSyncService()
@@ -143,7 +143,7 @@ class IndicatorScoreViewSet(viewsets.ModelViewSet):
             indicator_score.score = data['score']
             indicator_score.is_manual_override = True
             indicator_score.override_reason = data['reason']
-            indicator_score.override_user = get_dhis2_user(request)
+            indicator_score.override_user = get_dhis2_user_from_request(request)
             
             # Set color and label if provided
             if 'score_color' in data:
@@ -1038,7 +1038,7 @@ class AssessmentManagementViewSet(viewsets.ViewSet):
             }
             
             # Get current DHIS2 user
-            dhis2_user = get_dhis2_user(request)
+            dhis2_user = get_dhis2_user_from_request(request)
             
             # Perform the sync
             sync_log = sync_service.sync_data(sync_request, dhis2_user, request.session.session_key)

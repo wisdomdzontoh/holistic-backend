@@ -47,29 +47,27 @@ class DataSyncService:
         try:
             # Initialize DHIS2 client if not provided
             if not self.client:
-                if not session_key:
-                    # Try to get session data from cache or use default
-                    logger.warning("No session key provided, using default DHIS2 client")
-                    self.client = DHIS2Client(
-                        instance_url=dhis2_instance_url,
-                        username='admin',  # Default username
-                        password='district'  # Default password
-                    )
-                else:
+                if session_key:
+                    # Try to get credentials from session data first
                     session_data = get_dhis2_session_data(session_key)
-                    if not session_data:
-                        logger.warning("No active DHIS2 session, using default client")
-                        self.client = DHIS2Client(
-                            instance_url=dhis2_instance_url,
-                            username='admin',  # Default username
-                            password='district'  # Default password
-                        )
-                    else:
+                    if session_data:
+                        logger.info(f"Using session data for DHIS2 client")
                         self.client = DHIS2Client(
                             instance_url=session_data.get('instance_url', dhis2_instance_url),
-                            username=session_data.get('username'),
-                            password=session_data.get('password')
+                            username=session_data.get('dhis2_username'),  # Use stored credentials
+                            password=session_data.get('dhis2_password')   # Use stored credentials
                         )
+                    else:
+                        logger.error("No active DHIS2 session found. User must be authenticated first.")
+                        raise ValueError("No active DHIS2 session found. Please login with DHIS2 credentials first.")
+                elif dhis2_user:
+                    # If we have a user but no session, we need to get credentials from somewhere
+                    # This should not happen in normal flow - credentials should be in session
+                    logger.warning(f"DHIS2 user provided but no session data. User: {dhis2_user.dhis2_username}")
+                    raise ValueError("DHIS2 user provided but no session data. Please login with DHIS2 credentials first.")
+                else:
+                    logger.error("No DHIS2 user or session provided. User must be authenticated first.")
+                    raise ValueError("No DHIS2 user or session provided. Please login with DHIS2 credentials first.")
             
             # Get indicators to sync
             indicators = self._get_indicators_to_sync(sync_request)
@@ -134,12 +132,13 @@ class DataSyncService:
     def _get_org_units_to_sync(self, sync_request):
         """Get org units to sync based on request"""
         if sync_request.get('org_unit_ids'):
-            return OrgUnit.objects.filter(
-                dhis2_uid__in=sync_request['org_unit_ids'],
-                is_active=True
-            )
+            # Use org unit IDs directly from the request (no local DB check)
+            logger.info(f"Using org unit IDs directly from request: {sync_request['org_unit_ids']}")
+            return sync_request['org_unit_ids']
         else:
-            return OrgUnit.objects.filter(is_active=True)
+            # If no org units specified, return empty list
+            logger.warning("No org unit IDs specified in sync request")
+            return []
     
     def _get_periods_to_sync(self, sync_request):
         """Get periods to sync based on request"""
@@ -205,7 +204,13 @@ class DataSyncService:
             logger.error(f"Indicator {indicator.name} has no DHIS2 UID")
             return 0
         
-        for org_unit_id in org_units:
+        for org_unit in org_units:
+            # Handle both OrgUnit objects and string IDs
+            if hasattr(org_unit, 'dhis2_uid'):
+                org_unit_id = org_unit.dhis2_uid
+            else:
+                org_unit_id = org_unit
+            logger.info(f"Processing org unit: {org_unit_id} (type: {type(org_unit_id)})")
             for period in periods:
                 try:
                     # Fetch data from DHIS2
@@ -252,10 +257,8 @@ class DataSyncService:
         try:
             logger.info(f"Fetching data for indicator {indicator.dhis2_uid} ({indicator.indicator_type}) for org unit {org_unit_id} and period {period}")
 
-            # Check if org unit exists in local DB (optional, for better error messages)
-            from organisation.models import OrgUnit
-            if not OrgUnit.objects.filter(dhis2_uid=org_unit_id).exists():
-                logger.warning(f"Org unit {org_unit_id} not found in local DB. This may cause a 409 error if it does not exist in DHIS2.")
+            # Since org units come from DHIS2 frontend, we assume they exist in DHIS2
+            # No need to check local DB as org units are selected from DHIS2 in the frontend
 
             # Determine the data type and prepare the request
             try:
@@ -319,6 +322,7 @@ class DataSyncService:
             logger.error(f"Error fetching data for indicator {indicator.dhis2_uid}: {str(e)}")
             return None
 
+
     def _extract_value_from_analytics_response(self, response, indicator_uid):
         """Extract value from DHIS2 analytics response with enhanced parsing"""
         try:
@@ -335,7 +339,9 @@ class DataSyncService:
             # Find the data value column index
             value_column_index = None
             for i, header in enumerate(headers):
-                if header.get('name') == 'Value' or header.get('column') == 'value':
+                header_name = header.get('name', '').lower()
+                header_column = header.get('column', '').lower()
+                if header_name == 'value' or header_column == 'value':
                     value_column_index = i
                     break
             
@@ -344,6 +350,7 @@ class DataSyncService:
                 value_column_index = len(headers) - 1
             
             logger.info(f"Using value column index {value_column_index} for {indicator_uid}")
+            logger.info(f"Headers: {[h.get('name', 'Unknown') for h in headers]}")
             
             # Process rows to find the matching indicator
             rows = response['rows']
@@ -489,7 +496,7 @@ class DataSyncService:
             return {}
     
     def _get_org_unit_name(self, org_unit_id):
-        """Get organization unit name from cache or database"""
+        """Get organization unit name from cache or DHIS2 API (simplified for DHIS2-only workflow)"""
         try:
             # Try to get from cache first
             cache_key = f"org_unit_name_{org_unit_id}"
@@ -498,13 +505,22 @@ class DataSyncService:
             if org_unit_name:
                 return org_unit_name
             
-            # Try to get from database
-            from organisation.models import OrgUnit
-            try:
-                org_unit = OrgUnit.objects.get(org_unit_id=org_unit_id)
-                org_unit_name = org_unit.name
-            except OrgUnit.DoesNotExist:
-                org_unit_name = f"Org Unit {org_unit_id}"
+            # Since org units come from DHIS2 frontend, we can either:
+            # 1. Use the org unit ID as the name (simple approach)
+            # 2. Fetch the name from DHIS2 API (more complete but adds API calls)
+            
+            # Simple approach: Use ID as name for now
+            org_unit_name = f"Org Unit {org_unit_id}"
+            
+            # Optional: Fetch actual name from DHIS2 (uncomment if needed)
+            # try:
+            #     if self.client:
+            #         org_unit_data = self.client._make_request("GET", f"api/organisationUnits/{org_unit_id}", 
+            #                                                  params={"fields": "id,name,displayName"})
+            #         org_unit_name = org_unit_data.get('displayName') or org_unit_data.get('name') or f"Org Unit {org_unit_id}"
+            # except Exception as e:
+            #     logger.warning(f"Could not fetch org unit name from DHIS2: {str(e)}")
+            #     org_unit_name = f"Org Unit {org_unit_id}"
             
             # Cache the result
             cache.set(cache_key, org_unit_name, timeout=3600)  # Cache for 1 hour
