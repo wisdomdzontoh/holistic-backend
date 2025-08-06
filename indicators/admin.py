@@ -1,7 +1,95 @@
 from django.contrib import admin
 from django.utils.html import format_html
 from django.utils import timezone
+from django.http import HttpResponse
+from django.urls import path
+from django.shortcuts import render, redirect
+from django.contrib import messages
+from django.core.exceptions import ValidationError
+from import_export import resources, fields
+from import_export.admin import ImportExportModelAdmin
+from import_export.widgets import ForeignKeyWidget, ManyToManyWidget, Widget
+from import_export.formats import base_formats
 from .models import TrackedIndicator, IndicatorCategory, IndicatorCategoryMapping, IndicatorThreshold
+
+
+class TrackedIndicatorResource(resources.ModelResource):
+    """
+    Import/Export resource for TrackedIndicator model
+    """
+    # Custom fields for better import/export
+    indicator_type = fields.Field(
+        column_name='indicator_type',
+        attribute='indicator_type'
+    )
+    
+    target_type = fields.Field(
+        column_name='target_type',
+        attribute='target_type'
+    )
+    
+    # Computed fields for export
+    formula_components = fields.Field(
+        column_name='formula_components',
+        attribute='formula_components',
+        readonly=True
+    )
+    
+    class Meta:
+        model = TrackedIndicator
+        import_id_fields = ('dhis2_uid',)
+        export_order = (
+            'name', 'dhis2_uid', 'indicator_type', 'indicator_number', 
+            'display_order', 'formula', 'target_value', 'target_type',
+            'min_score', 'max_score', 'is_active', 'description',
+            'dhis2_name', 'dhis2_description', 'formula_components'
+        )
+        exclude = ('created_at', 'updated_at', 'last_sync')
+        
+    def get_formula_components(self, obj):
+        """Get formula components for export"""
+        if obj.formula:
+            return ', '.join(obj.get_formula_components())
+        return ''
+    
+    def before_import_row(self, row, **kwargs):
+        """Validate and clean data before import"""
+        # Ensure dhis2_uid is provided
+        if not row.get('dhis2_uid'):
+            raise ValidationError("DHIS2 UID is required")
+        
+        # Set default values
+        if not row.get('indicator_type'):
+            row['indicator_type'] = 'indicator'
+        
+        if not row.get('target_type'):
+            row['target_type'] = 'increase'
+        
+        if not row.get('is_active'):
+            row['is_active'] = True
+        
+        # Ensure text fields are not None
+        if row.get('description') is None:
+            row['description'] = ''
+        
+        if row.get('dhis2_description') is None:
+            row['dhis2_description'] = ''
+        
+        if row.get('formula') is None:
+            row['formula'] = ''
+        
+        if row.get('dhis2_name') is None:
+            row['dhis2_name'] = ''
+        
+        if row.get('indicator_number') is None:
+            row['indicator_number'] = ''
+    
+    def after_import_row(self, row, row_result, **kwargs):
+        """Additional processing after import"""
+        # Update last_sync to current time for newly imported indicators
+        if row_result.instance:
+            row_result.instance.last_sync = timezone.now()
+            row_result.instance.save()
 
 
 class IndicatorThresholdInline(admin.TabularInline):
@@ -25,10 +113,12 @@ class IndicatorCategoryMappingInline(admin.TabularInline):
 
 
 @admin.register(TrackedIndicator)
-class TrackedIndicatorAdmin(admin.ModelAdmin):
+class TrackedIndicatorAdmin(ImportExportModelAdmin):
     """
-    Admin interface for tracked indicators
+    Admin interface for tracked indicators with import/export functionality
     """
+    resource_class = TrackedIndicatorResource
+    
     list_display = [
         'name', 'dhis2_uid', 'indicator_type', 'is_active', 'target_value',
         'target_type', 'last_sync', 'sync_status'
@@ -45,6 +135,10 @@ class TrackedIndicatorAdmin(admin.ModelAdmin):
     fieldsets = (
         ('Basic Information', {
             'fields': ('name', 'dhis2_uid', 'indicator_type', 'is_active', 'description')
+        }),
+        ('Excel Structure', {
+            'fields': ('indicator_number', 'display_order'),
+            'classes': ('collapse',)
         }),
         ('DHIS2 Metadata', {
             'fields': ('dhis2_name', 'dhis2_description', 'last_sync'),
@@ -65,6 +159,43 @@ class TrackedIndicatorAdmin(admin.ModelAdmin):
     
     inlines = [IndicatorThresholdInline, IndicatorCategoryMappingInline]
     
+    # Import/Export settings
+    change_list_template = 'admin/indicators/trackedindicator/change_list.html'
+    
+    def get_urls(self):
+        """Add custom URLs for import/export"""
+        urls = super().get_urls()
+        custom_urls = [
+            path('import-template/', self.import_template_view, name='trackedindicator_import_template'),
+            path('export-template/', self.export_template_view, name='trackedindicator_export_template'),
+        ]
+        return custom_urls + urls
+    
+    def import_template_view(self, request):
+        """Download import template"""
+        resource = self.resource_class()
+        dataset = resource.export(TrackedIndicator.objects.none())
+        
+        response = HttpResponse(
+            dataset.xlsx,
+            content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+        )
+        response['Content-Disposition'] = 'attachment; filename="tracked_indicators_import_template.xlsx"'
+        return response
+    
+    def export_template_view(self, request):
+        """Export current indicators as template"""
+        queryset = self.get_queryset(request)
+        resource = self.resource_class()
+        dataset = resource.export(queryset)
+        
+        response = HttpResponse(
+            dataset.xlsx,
+            content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+        )
+        response['Content-Disposition'] = 'attachment; filename="tracked_indicators_export.xlsx"'
+        return response
+    
     def sync_status(self, obj):
         """Display sync status"""
         if not obj.last_sync:
@@ -80,7 +211,7 @@ class TrackedIndicatorAdmin(admin.ModelAdmin):
     
     sync_status.short_description = 'Sync Status'
     
-    actions = ['activate_indicators', 'deactivate_indicators', 'sync_metadata']
+    actions = ['activate_indicators', 'deactivate_indicators', 'sync_metadata', 'export_selected']
     
     def activate_indicators(self, request, queryset):
         """Activate selected indicators"""
@@ -99,6 +230,19 @@ class TrackedIndicatorAdmin(admin.ModelAdmin):
         # This would typically call the sync method
         self.message_user(request, f'Metadata sync initiated for {queryset.count()} indicators.')
     sync_metadata.short_description = "Sync metadata for selected indicators"
+    
+    def export_selected(self, request, queryset):
+        """Export selected indicators"""
+        resource = self.resource_class()
+        dataset = resource.export(queryset)
+        
+        response = HttpResponse(
+            dataset.xlsx,
+            content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+        )
+        response['Content-Disposition'] = f'attachment; filename="selected_indicators_{timezone.now().strftime("%Y%m%d_%H%M%S")}.xlsx"'
+        return response
+    export_selected.short_description = "Export selected indicators"
 
 
 @admin.register(IndicatorCategory)

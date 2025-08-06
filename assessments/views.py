@@ -1195,6 +1195,12 @@ class AssessmentManagementViewSet(viewsets.ViewSet):
                         'description': objective.description,
                         'color': objective.color,
                         'order': objective.order,
+                        'milestone': {
+                            'id': objective.milestone.id if objective.milestone else None,
+                            'name': objective.milestone.name if objective.milestone else None,
+                            'code': objective.milestone.code if objective.milestone else None,
+                            'color': objective.milestone.color if objective.milestone else None
+                        } if objective.milestone else None,
                         'indicators': [],
                         'score': None
                     }
@@ -1220,7 +1226,7 @@ class AssessmentManagementViewSet(viewsets.ViewSet):
                     indicators = TrackedIndicator.objects.filter(
                         objective_weights__objective=objective,
                         is_active=True
-                    ).order_by('name')
+                    ).order_by('display_order', 'indicator_number')
                     
                     for indicator in indicators:
                         indicator_data = {
@@ -1228,6 +1234,8 @@ class AssessmentManagementViewSet(viewsets.ViewSet):
                             'name': indicator.name,
                             'dhis2_uid': indicator.dhis2_uid,
                             'description': indicator.description,
+                            'indicator_number': indicator.indicator_number,
+                            'display_order': indicator.display_order,
                             'target_value': indicator.target_value,
                             'target_type': indicator.target_type,
                             'weight': 1.0,  # Default weight
@@ -1261,17 +1269,25 @@ class AssessmentManagementViewSet(viewsets.ViewSet):
                                     'is_manual_override': ind_score.is_manual_override
                                 }
                         
-                        # Get historical data values
-                        data_points = IndicatorData.objects.filter(
+                        # Get data values for the specific period
+                        data_point = IndicatorData.objects.filter(
                             indicator=indicator,
-                            org_unit_id=org_unit_ids[0]
-                        ).order_by('period')
+                            org_unit_id=org_unit_ids[0],
+                            period=period.name
+                        ).first()
                         
-                        for data_point in data_points:
-                            indicator_data['data_values'][data_point.period] = {
+                        if data_point:
+                            indicator_data['data_values'][period.name] = {
                                 'value': data_point.value,
                                 'calculated_value': data_point.calculated_value,
-                                'created_at': data_point.created_at
+                                'created_at': data_point.created_at.isoformat() if data_point.created_at else None
+                            }
+                        else:
+                            # Initialize empty data for the period
+                            indicator_data['data_values'][period.name] = {
+                                'value': None,
+                                'calculated_value': None,
+                                'created_at': None
                             }
                         
                         objective_data['indicators'].append(indicator_data)

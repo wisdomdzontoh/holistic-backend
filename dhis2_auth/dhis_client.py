@@ -754,16 +754,29 @@ class DHIS2Client:
                 logger.error(f"Full response content: {e.response.text}")
             raise
 
-    def get_analytics_data(self, data_elements: List[str], periods: List[str], 
-                          org_units: List[str] = None) -> Dict[str, Any]:
+    def get_analytics_data(self, data_elements: List[str] = None, indicators: List[str] = None, 
+                          periods: List[str] = None, org_units: List[str] = None,
+                          data_sets: List[str] = None, program_indicators: List[str] = None,
+                          skip_data: bool = False, skip_meta: bool = False,
+                          skip_rounding: bool = False, show_hierarchy: bool = True,
+                          include_num_den: bool = True, output_type: str = "EVENT") -> Dict[str, Any]:
         """
         Get analytics data from DHIS2 using the /api/analytics endpoint
-        This supports both fixed and relative periods
+        This supports data elements, indicators, program indicators, and data sets
         
         Args:
             data_elements: List of data element UIDs
+            indicators: List of indicator UIDs
             periods: List of period identifiers (fixed or relative)
             org_units: List of org unit UIDs (optional)
+            data_sets: List of data set UIDs (optional)
+            program_indicators: List of program indicator UIDs (optional)
+            skip_data: Skip data rows in response
+            skip_meta: Skip metadata in response
+            skip_rounding: Skip rounding of values
+            show_hierarchy: Show org unit hierarchy
+            include_num_den: Include numerator/denominator
+            output_type: Output type (EVENT, ENROLLMENT, TRACKED_ENTITY_INSTANCE)
             
         Returns:
             Analytics data dictionary
@@ -771,28 +784,396 @@ class DHIS2Client:
         try:
             endpoint = "api/analytics"
             
-            # Build dimensions
-            dx_dimension = f"dx:{';'.join(data_elements)}"
-            pe_dimension = f"pe:{';'.join(periods)}"
+            # Build dimensions list
+            dimensions = []
             
-            params = {
-                "dimension": [dx_dimension, pe_dimension],
-                "skipData": "false",
-                "skipMeta": "false",
-                "skipRounding": "false",
-                "showHierarchy": "true",
-                "includeNumDen": "true"
-            }
+            # Data dimension (dx) - combine all data types
+            dx_items = []
+            if data_elements:
+                dx_items.extend(data_elements)
+            if indicators:
+                dx_items.extend(indicators)
+            if data_sets:
+                dx_items.extend(data_sets)
+            if program_indicators:
+                dx_items.extend(program_indicators)
             
-            # Add org units if provided
+            if dx_items:
+                dx_dimension = f"dx:{';'.join(dx_items)}"
+                dimensions.append(dx_dimension)
+            
+            # Period dimension (pe)
+            if periods:
+                pe_dimension = f"pe:{';'.join(periods)}"
+                dimensions.append(pe_dimension)
+            
+            # Org unit dimension (ou)
             if org_units:
                 ou_dimension = f"ou:{';'.join(org_units)}"
-                params["dimension"].append(ou_dimension)
+                dimensions.append(ou_dimension)
+            
+            # Build parameters
+            params = {
+                "dimension": dimensions,
+                "skipData": str(skip_data).lower(),
+                "skipMeta": str(skip_meta).lower(),
+                "skipRounding": str(skip_rounding).lower(),
+                "showHierarchy": str(show_hierarchy).lower(),
+                "includeNumDen": str(include_num_den).lower(),
+                "outputType": output_type
+            }
+            
+            logger.info(f"Making DHIS2 analytics request to {endpoint}")
+            logger.info(f"Request parameters: {params}")
+            logger.info(f"Data elements: {data_elements}")
+            logger.info(f"Indicators: {indicators}")
+            logger.info(f"Data sets: {data_sets}")
+            logger.info(f"Program indicators: {program_indicators}")
+            logger.info(f"Periods: {periods}")
+            logger.info(f"Org units: {org_units}")
             
             data = self._make_request("GET", endpoint, params=params)
+            
+            logger.info(f"DHIS2 analytics response received. Response type: {type(data)}")
+            if isinstance(data, dict):
+                logger.info(f"Response keys: {list(data.keys())}")
+                if 'rows' in data:
+                    logger.info(f"Number of rows in response: {len(data['rows'])}")
+                if 'headers' in data:
+                    logger.info(f"Number of headers in response: {len(data['headers'])}")
+            else:
+                logger.warning(f"Unexpected response type: {type(data)}")
+            
             return data
+            
         except requests.RequestException as e:
             logger.error(f"Error getting analytics data: {str(e)}")
+            raise
+
+    def get_analytics_data_enhanced(self, data_items: List[Dict[str, str]], periods: List[str], 
+                                  org_units: List[str] = None, **kwargs) -> Dict[str, Any]:
+        """
+        Enhanced analytics data fetching with support for different data item types
+        
+        Args:
+            data_items: List of dictionaries with 'uid' and 'type' keys
+                       type can be: 'dataElement', 'indicator', 'dataSet', 'programIndicator'
+            periods: List of period identifiers
+            org_units: List of org unit UIDs (optional)
+            **kwargs: Additional parameters for analytics endpoint
+            
+        Returns:
+            Analytics data dictionary
+        """
+        try:
+            # Separate data items by type
+            data_elements = [item['uid'] for item in data_items if item.get('type') == 'dataElement']
+            indicators = [item['uid'] for item in data_items if item.get('type') == 'indicator']
+            data_sets = [item['uid'] for item in data_items if item.get('type') == 'dataSet']
+            program_indicators = [item['uid'] for item in data_items if item.get('type') == 'programIndicator']
+            
+            return self.get_analytics_data(
+                data_elements=data_elements,
+                indicators=indicators,
+                data_sets=data_sets,
+                program_indicators=program_indicators,
+                periods=periods,
+                org_units=org_units,
+                **kwargs
+            )
+            
+        except Exception as e:
+            logger.error(f"Error in enhanced analytics data fetching: {str(e)}")
+            raise
+
+    def get_data_set_metadata(self, data_set_id: str = None) -> Dict[str, Any]:
+        """
+        Get data set metadata including data elements and indicators
+        
+        Args:
+            data_set_id: Specific data set ID (optional)
+            
+        Returns:
+            Data set metadata dictionary
+        """
+        try:
+            if data_set_id:
+                endpoint = f"api/dataSets/{data_set_id}/metadata"
+            else:
+                endpoint = "api/dataSetMetadata"
+            
+            data = self._make_request("GET", endpoint)
+            return data
+            
+        except requests.RequestException as e:
+            logger.error(f"Error getting data set metadata: {str(e)}")
+            raise
+
+    def get_indicator_group_indicators(self, indicator_group_uid: str, 
+                                     fields: List[str] = None) -> List[Dict[str, Any]]:
+        """
+        Get indicators belonging to a specific indicator group
+        
+        Args:
+            indicator_group_uid: Indicator group UID
+            fields: List of fields to include in response
+            
+        Returns:
+            List of indicator dictionaries
+        """
+        try:
+            endpoint = f"api/indicatorGroups/{indicator_group_uid}"
+            
+            params = {}
+            if fields:
+                params["fields"] = f"indicators[{','.join(fields)}]"
+            else:
+                params["fields"] = "indicators[id,name,description,shortName,displayName,code,indicatorType]"
+            
+            data = self._make_request("GET", endpoint, params=params)
+            return data.get('indicators', [])
+            
+        except requests.RequestException as e:
+            logger.error(f"Error getting indicator group indicators: {str(e)}")
+            raise
+
+    def get_data_element_group_elements(self, data_element_group_uid: str,
+                                       fields: List[str] = None) -> List[Dict[str, Any]]:
+        """
+        Get data elements belonging to a specific data element group
+        
+        Args:
+            data_element_group_uid: Data element group UID
+            fields: List of fields to include in response
+            
+        Returns:
+            List of data element dictionaries
+        """
+        try:
+            endpoint = f"api/dataElementGroups/{data_element_group_uid}"
+            
+            params = {}
+            if fields:
+                params["fields"] = f"dataElements[{','.join(fields)}]"
+            else:
+                params["fields"] = "dataElements[id,name,description,shortName,displayName,code,valueType,aggregationType]"
+            
+            data = self._make_request("GET", endpoint, params=params)
+            return data.get('dataElements', [])
+            
+        except requests.RequestException as e:
+            logger.error(f"Error getting data element group elements: {str(e)}")
+            raise
+
+    def get_indicators(self, limit: int = 50, fields: List[str] = None, 
+                      filter_query: str = None, indicator_type: str = None) -> List[Dict[str, Any]]:
+        """
+        Get indicators from DHIS2 with enhanced filtering
+        
+        Args:
+            limit: Maximum number of indicators to return
+            fields: List of fields to include in response
+            filter_query: Filter query string (e.g., "name:ilike:immunization")
+            indicator_type: Filter by indicator type
+            
+        Returns:
+            List of indicator dictionaries
+        """
+        try:
+            endpoint = "api/indicators"
+            
+            params = {
+                "paging": "false",
+                "pageSize": limit
+            }
+            
+            if fields:
+                params["fields"] = ",".join(fields)
+            else:
+                # Enhanced default fields for indicators
+                params["fields"] = "id,name,description,shortName,displayName,code,indicatorType,denominator,denominatorDescription,numerator,numeratorDescription,annualized,indicatorGroups[id,name]"
+            
+            # Add filters
+            filters = []
+            if filter_query:
+                filters.append(filter_query)
+            if indicator_type:
+                filters.append(f"indicatorType:eq:{indicator_type}")
+            
+            if filters:
+                params["filter"] = filters
+            
+            data = self._make_request("GET", endpoint, params=params)
+            return data.get('indicators', [])
+            
+        except requests.RequestException as e:
+            logger.error(f"Error getting indicators: {str(e)}")
+            raise
+
+    def get_data_elements(self, limit: int = 50, fields: List[str] = None,
+                         filter_query: str = None, value_type: str = None,
+                         domain_type: str = None) -> List[Dict[str, Any]]:
+        """
+        Get data elements from DHIS2 with enhanced filtering
+        
+        Args:
+            limit: Maximum number of data elements to return
+            fields: List of fields to include in response
+            filter_query: Filter query string (e.g., "name:ilike:immunization")
+            value_type: Filter by value type
+            domain_type: Filter by domain type
+            
+        Returns:
+            List of data element dictionaries
+        """
+        try:
+            endpoint = "api/dataElements"
+            
+            params = {
+                "paging": "false",
+                "pageSize": limit
+            }
+            
+            if fields:
+                params["fields"] = ",".join(fields)
+            else:
+                # Enhanced default fields for data elements
+                params["fields"] = "id,name,description,shortName,displayName,code,valueType,aggregationType,domainType,dataElementGroups[id,name],categoryCombo[id,name]"
+            
+            # Add filters
+            filters = []
+            if filter_query:
+                filters.append(filter_query)
+            if value_type:
+                filters.append(f"valueType:eq:{value_type}")
+            if domain_type:
+                filters.append(f"domainType:eq:{domain_type}")
+            
+            if filters:
+                params["filter"] = filters
+            
+            data = self._make_request("GET", endpoint, params=params)
+            return data.get('dataElements', [])
+            
+        except requests.RequestException as e:
+            logger.error(f"Error getting data elements: {str(e)}")
+            raise
+
+    def search_indicators(self, query: str, limit: int = 20, 
+                         search_fields: List[str] = None) -> List[Dict[str, Any]]:
+        """
+        Search indicators by name, description, or code with enhanced search
+        
+        Args:
+            query: Search query string
+            limit: Maximum number of results
+            search_fields: Fields to search in (name, description, code)
+            
+        Returns:
+            List of matching indicators
+        """
+        try:
+            endpoint = "api/indicators"
+            
+            params = {
+                "paging": "false",
+                "pageSize": limit
+            }
+            
+            # Build search filter
+            if search_fields:
+                search_filters = []
+                for field in search_fields:
+                    search_filters.append(f"{field}:ilike:{query}")
+                params["filter"] = search_filters
+            else:
+                # Default search in name and description
+                params["filter"] = [f"name:ilike:{query}", f"description:ilike:{query}"]
+            
+            data = self._make_request("GET", endpoint, params=params)
+            return data.get('indicators', [])
+            
+        except requests.RequestException as e:
+            logger.error(f"Error searching indicators: {str(e)}")
+            raise
+
+    def search_data_elements(self, query: str, limit: int = 20,
+                            search_fields: List[str] = None) -> List[Dict[str, Any]]:
+        """
+        Search data elements by name, description, or code with enhanced search
+        
+        Args:
+            query: Search query string
+            limit: Maximum number of results
+            search_fields: Fields to search in (name, description, code)
+            
+        Returns:
+            List of matching data elements
+        """
+        try:
+            endpoint = "api/dataElements"
+            
+            params = {
+                "paging": "false",
+                "pageSize": limit
+            }
+            
+            # Build search filter
+            if search_fields:
+                search_filters = []
+                for field in search_fields:
+                    search_filters.append(f"{field}:ilike:{query}")
+                params["filter"] = search_filters
+            else:
+                # Default search in name and description
+                params["filter"] = [f"name:ilike:{query}", f"description:ilike:{query}"]
+            
+            data = self._make_request("GET", endpoint, params=params)
+            return data.get('dataElements', [])
+            
+        except requests.RequestException as e:
+            logger.error(f"Error searching data elements: {str(e)}")
+            raise
+
+    def get_analytics_data_batch(self, data_items: List[Dict[str, str]], periods: List[str],
+                                org_units: List[str] = None, batch_size: int = 50) -> List[Dict[str, Any]]:
+        """
+        Fetch analytics data in batches to handle large datasets
+        
+        Args:
+            data_items: List of data item dictionaries
+            periods: List of period identifiers
+            org_units: List of org unit UIDs (optional)
+            batch_size: Number of data items per batch
+            
+        Returns:
+            List of analytics data dictionaries
+        """
+        try:
+            results = []
+            
+            # Split data items into batches
+            for i in range(0, len(data_items), batch_size):
+                batch = data_items[i:i + batch_size]
+                
+                logger.info(f"Processing batch {i//batch_size + 1} of {(len(data_items) + batch_size - 1)//batch_size}")
+                
+                batch_result = self.get_analytics_data_enhanced(
+                    data_items=batch,
+                    periods=periods,
+                    org_units=org_units
+                )
+                
+                results.append(batch_result)
+                
+                # Add small delay between batches to avoid overwhelming the server
+                import time
+                time.sleep(0.1)
+            
+            return results
+            
+        except Exception as e:
+            logger.error(f"Error in batch analytics data fetching: {str(e)}")
             raise
 
 
@@ -865,4 +1246,4 @@ class DHIS2ClientFactory:
                 
         except Session.DoesNotExist:
             logger.warning(f"Session {session_key} not found")
-            return DHIS2Client(instance_url) 
+            return DHIS2Client(instance_url)

@@ -4,6 +4,35 @@ from django.utils.translation import gettext_lazy as _
 from indicators.models import TrackedIndicator, IndicatorCategory
 
 
+class Milestone(models.Model):
+    """
+    Model to represent milestones within objectives (e.g., MS 1.1, MS 1.2)
+    """
+    name = models.CharField(max_length=255, help_text="Milestone name (e.g., 'MS 1.1')")
+    description = models.TextField(blank=True, help_text="Detailed description of the milestone")
+    code = models.CharField(max_length=50, unique=True, help_text="Short code for the milestone (e.g., 'MS1.1')")
+    order = models.PositiveIntegerField(default=0, help_text="Display order within objective")
+    is_active = models.BooleanField(default=True, help_text="Whether this milestone is active")
+    color = models.CharField(
+        max_length=7,
+        default="#ffc107",
+        help_text="Hex color code for this milestone (yellow for Excel)"
+    )
+    
+    # Metadata
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    
+    class Meta:
+        db_table = 'milestones'
+        verbose_name = 'Milestone'
+        verbose_name_plural = 'Milestones'
+        ordering = ['order', 'name']
+    
+    def __str__(self):
+        return f"{self.name} ({self.code})"
+
+
 class Objective(models.Model):
     """
     Model to represent assessment objectives (e.g., Objective 1, 2, 3)
@@ -15,8 +44,18 @@ class Objective(models.Model):
     is_active = models.BooleanField(default=True, help_text="Whether this objective is active")
     color = models.CharField(
         max_length=7,
-        default="#007bff",
-        help_text="Hex color code for this objective"
+        default="#fd7e14",
+        help_text="Hex color code for this objective (orange for Excel)"
+    )
+    
+    # Associated milestone
+    milestone = models.ForeignKey(
+        Milestone,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='objectives',
+        help_text="Associated milestone for this objective"
     )
     
     # Metadata

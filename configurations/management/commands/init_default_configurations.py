@@ -1,310 +1,222 @@
 from django.core.management.base import BaseCommand
+from configurations.models import Objective, Milestone, ScoringRule, AssessmentPeriod
+from indicators.models import TrackedIndicator
+from decimal import Decimal
 from django.utils import timezone
-from datetime import date, timedelta
-from configurations.models import (
-    Objective, ScoringRule, WeightingScheme, AssessmentPeriod, SystemConfiguration
-)
-
+from datetime import date
 
 class Command(BaseCommand):
     help = 'Initialize default configurations for the holistic assessment system'
 
-    def add_arguments(self, parser):
-        parser.add_argument(
-            '--force',
-            action='store_true',
-            help='Force recreation of existing configurations'
-        )
-        parser.add_argument(
-            '--skip-objectives',
-            action='store_true',
-            help='Skip creating default objectives'
-        )
-        parser.add_argument(
-            '--skip-scoring-rules',
-            action='store_true',
-            help='Skip creating default scoring rules'
-        )
-        parser.add_argument(
-            '--skip-weighting-schemes',
-            action='store_true',
-            help='Skip creating default weighting schemes'
-        )
-        parser.add_argument(
-            '--skip-assessment-periods',
-            action='store_true',
-            help='Skip creating default assessment periods'
-        )
-
     def handle(self, *args, **options):
-        force = options['force']
-        skip_objectives = options['skip_objectives']
-        skip_scoring_rules = options['skip_scoring_rules']
-        skip_weighting_schemes = options['skip_weighting_schemes']
-        skip_assessment_periods = options['skip_assessment_periods']
-        
         self.stdout.write('Initializing default configurations...')
         
-        if not skip_objectives:
-            self.create_default_objectives(force)
-        
-        if not skip_scoring_rules:
-            self.create_default_scoring_rules(force)
-        
-        if not skip_weighting_schemes:
-            self.create_default_weighting_schemes(force)
-        
-        if not skip_assessment_periods:
-            self.create_default_assessment_periods(force)
-        
-        self.create_default_system_configurations(force)
-        
-        self.stdout.write(
-            self.style.SUCCESS('Default configurations initialized successfully!')
-        )
-    
-    def create_default_objectives(self, force=False):
-        """Create default objectives"""
-        self.stdout.write('Creating default objectives...')
-        
-        default_objectives = [
-            {
-                'name': 'Objective 1: Service Delivery',
-                'code': 'OBJ1',
-                'description': 'Improve service delivery and patient care quality',
+        # Create milestones
+        milestone1, created = Milestone.objects.get_or_create(
+            code='MS1.1',
+            defaults={
+                'name': 'MS 1.1',
+                'description': 'Universal access to better & efficiently managed quality healthcare services',
                 'order': 1,
-                'color': '#007bff'
-            },
-            {
-                'name': 'Objective 2: Health Outcomes',
-                'code': 'OBJ2',
-                'description': 'Enhance health outcomes and population health',
-                'order': 2,
-                'color': '#28a745'
-            },
-            {
-                'name': 'Objective 3: Health Systems Strengthening',
-                'code': 'OBJ3',
-                'description': 'Strengthen health systems and infrastructure',
-                'order': 3,
                 'color': '#ffc107'
+            }
+        )
+        
+        # Create objectives
+        objective1, created = Objective.objects.get_or_create(
+            code='OBJ1',
+            defaults={
+                'name': 'Objective 1',
+                'description': 'Universal access to better & efficiently managed quality healthcare services',
+                'order': 1,
+                'color': '#fd7e14',
+                'milestone': milestone1
+            }
+        )
+        
+        objective2, created = Objective.objects.get_or_create(
+            code='OBJ2',
+            defaults={
+                'name': 'Objective 2',
+                'description': 'Reduce avoidable maternal, adolescent & child deaths and disabilities',
+                'order': 2,
+                'color': '#fd7e14',
+                'milestone': milestone1
+            }
+        )
+        
+        # Create sample indicators (these are example DHIS2 UIDs - replace with actual ones)
+        indicators_data = [
+            {
+                'name': 'Family Planning Acceptor rate',
+                'dhis2_uid': 'FTRrcoaog83',  # Example UID - replace with actual
+                'indicator_number': '1.1',
+                'display_order': 1,
+                'target_value': Decimal('40'),
+                'target_type': 'increase',
+                'objective': objective1
             },
             {
-                'name': 'Objective 4: Governance and Leadership',
-                'code': 'OBJ4',
-                'description': 'Improve governance, leadership, and accountability',
-                'order': 4,
-                'color': '#dc3545'
+                'name': 'Long Term couple year protection',
+                'dhis2_uid': 'FTRrcoaog84',  # Example UID - replace with actual
+                'indicator_number': '1.2',
+                'display_order': 2,
+                'target_value': Decimal('350000'),
+                'target_type': 'increase',
+                'objective': objective1
             },
             {
-                'name': 'Objective 5: Innovation and Research',
-                'code': 'OBJ5',
-                'description': 'Promote innovation, research, and evidence-based practice',
-                'order': 5,
-                'color': '#6f42c1'
+                'name': 'Percentage skilled deliveries',
+                'dhis2_uid': 'FTRrcoaog85',  # Example UID - replace with actual
+                'indicator_number': '1.3',
+                'display_order': 3,
+                'target_value': Decimal('65'),
+                'target_type': 'increase',
+                'objective': objective1
+            },
+            {
+                'name': 'Proportion of facility deaths that are medically certified',
+                'dhis2_uid': 'FTRrcoaog86',  # Example UID - replace with actual
+                'indicator_number': '2.1',
+                'display_order': 4,
+                'target_value': Decimal('90'),
+                'target_type': 'increase',
+                'objective': objective2
+            },
+            {
+                'name': 'Incidence rate of diabetes (using OPD as proxy)',
+                'dhis2_uid': 'FTRrcoaog87',  # Example UID - replace with actual
+                'indicator_number': '2.2',
+                'display_order': 5,
+                'target_value': Decimal('5'),
+                'target_type': 'decrease',
+                'objective': objective2
             }
         ]
         
-        created_count = 0
-        for obj_data in default_objectives:
-            objective, created = Objective.objects.get_or_create(
-                code=obj_data['code'],
-                defaults=obj_data
-            )
-            if created or force:
-                if force and not created:
-                    for key, value in obj_data.items():
-                        setattr(objective, key, value)
-                    objective.save()
-                created_count += 1
-                self.stdout.write(f'  ✓ Created/Updated: {objective.name}')
-        
-        self.stdout.write(f'  Created/Updated {created_count} objectives')
-    
-    def create_default_scoring_rules(self, force=False):
-        """Create default scoring rules"""
-        self.stdout.write('Creating default scoring rules...')
-        
-        # Target Gap scoring rules
-        gap_rules = [
-            {'name': 'Excellent Performance', 'min_value': 0, 'max_value': 5, 'score': 2, 'color': '#28a745', 'label': 'Excellent'},
-            {'name': 'Good Performance', 'min_value': 5, 'max_value': 15, 'score': 1, 'color': '#17a2b8', 'label': 'Good'},
-            {'name': 'Sustained Performance', 'min_value': 15, 'max_value': 25, 'score': 0, 'color': '#ffc107', 'label': 'Sustained'},
-            {'name': 'Underperforming', 'min_value': 25, 'max_value': 40, 'score': -1, 'color': '#fd7e14', 'label': 'Underperforming'},
-            {'name': 'Severely Underperforming', 'min_value': 40, 'max_value': None, 'score': -2, 'color': '#dc3545', 'label': 'Poor'},
-        ]
-        
-        # Percent Change scoring rules
-        change_rules = [
-            {'name': 'Significant Improvement', 'min_value': 10, 'max_value': None, 'score': 2, 'color': '#28a745', 'label': 'Excellent'},
-            {'name': 'Moderate Improvement', 'min_value': 5, 'max_value': 10, 'score': 1, 'color': '#17a2b8', 'label': 'Good'},
-            {'name': 'Stable Performance', 'min_value': -5, 'max_value': 5, 'score': 0, 'color': '#ffc107', 'label': 'Sustained'},
-            {'name': 'Moderate Decline', 'min_value': -10, 'max_value': -5, 'score': -1, 'color': '#fd7e14', 'label': 'Underperforming'},
-            {'name': 'Significant Decline', 'min_value': None, 'max_value': -10, 'score': -2, 'color': '#dc3545', 'label': 'Poor'},
-        ]
-        
-        created_count = 0
-        
-        # Create gap rules
-        for i, rule_data in enumerate(gap_rules):
-            rule_data['performance_type'] = 'gap'
-            rule_data['priority'] = i
-            rule, created = ScoringRule.objects.get_or_create(
-                name=rule_data['name'],
-                performance_type='gap',
-                defaults=rule_data
-            )
-            if created or force:
-                if force and not created:
-                    for key, value in rule_data.items():
-                        setattr(rule, key, value)
-                    rule.save()
-                created_count += 1
-                self.stdout.write(f'  ✓ Created/Updated: {rule.name} (Gap)')
-        
-        # Create change rules
-        for i, rule_data in enumerate(change_rules):
-            rule_data['performance_type'] = 'change'
-            rule_data['priority'] = i
-            rule, created = ScoringRule.objects.get_or_create(
-                name=rule_data['name'],
-                performance_type='change',
-                defaults=rule_data
-            )
-            if created or force:
-                if force and not created:
-                    for key, value in rule_data.items():
-                        setattr(rule, key, value)
-                    rule.save()
-                created_count += 1
-                self.stdout.write(f'  ✓ Created/Updated: {rule.name} (Change)')
-        
-        self.stdout.write(f'  Created/Updated {created_count} scoring rules')
-    
-    def create_default_weighting_schemes(self, force=False):
-        """Create default weighting schemes"""
-        self.stdout.write('Creating default weighting schemes...')
-        
-        default_schemes = [
-            {
-                'name': 'Balanced Weighting',
-                'description': 'Equal weighting for all objectives',
-                'is_default': True
-            },
-            {
-                'name': 'Service Delivery Focus',
-                'description': 'Emphasis on service delivery and patient care',
-                'is_default': False
-            },
-            {
-                'name': 'Outcomes Focus',
-                'description': 'Emphasis on health outcomes and population health',
-                'is_default': False
-            }
-        ]
-        
-        created_count = 0
-        for scheme_data in default_schemes:
-            scheme, created = WeightingScheme.objects.get_or_create(
-                name=scheme_data['name'],
-                defaults=scheme_data
-            )
-            if created or force:
-                if force and not created:
-                    for key, value in scheme_data.items():
-                        setattr(scheme, key, value)
-                    scheme.save()
-                created_count += 1
-                self.stdout.write(f'  ✓ Created/Updated: {scheme.name}')
-        
-        self.stdout.write(f'  Created/Updated {created_count} weighting schemes')
-    
-    def create_default_assessment_periods(self, force=False):
-        """Create default assessment periods"""
-        self.stdout.write('Creating default assessment periods...')
-        
-        # Create quarterly periods for current year
-        current_year = timezone.now().year
-        quarters = [
-            ('Q1', date(current_year, 1, 1), date(current_year, 3, 31)),
-            ('Q2', date(current_year, 4, 1), date(current_year, 6, 30)),
-            ('Q3', date(current_year, 7, 1), date(current_year, 9, 30)),
-            ('Q4', date(current_year, 10, 1), date(current_year, 12, 31)),
-        ]
-        
-        created_count = 0
-        for quarter_name, start_date, end_date in quarters:
-            period_name = f'{quarter_name} {current_year}'
-            period, created = AssessmentPeriod.objects.get_or_create(
-                name=period_name,
+        for indicator_data in indicators_data:
+            indicator, created = TrackedIndicator.objects.get_or_create(
+                dhis2_uid=indicator_data['dhis2_uid'],
                 defaults={
-                    'period_type': 'quarterly',
-                    'start_date': start_date,
-                    'end_date': end_date,
-                    'is_current': quarter_name == 'Q4'  # Set Q4 as current
+                    'name': indicator_data['name'],
+                    'indicator_number': indicator_data['indicator_number'],
+                    'display_order': indicator_data['display_order'],
+                    'target_value': indicator_data['target_value'],
+                    'target_type': indicator_data['target_type'],
+                    'is_active': True,
+                    'description': f'Sample indicator: {indicator_data["name"]}'
                 }
             )
-            if created or force:
-                if force and not created:
-                    period.period_type = 'quarterly'
-                    period.start_date = start_date
-                    period.end_date = end_date
-                    period.is_current = quarter_name == 'Q4'
-                    period.save()
-                created_count += 1
-                self.stdout.write(f'  ✓ Created/Updated: {period.name}')
+            
+            # Create objective weight mapping
+            from configurations.models import IndicatorWeight
+            weight, created = IndicatorWeight.objects.get_or_create(
+                objective=indicator_data['objective'],
+                indicator=indicator,
+                defaults={'weight': Decimal('1.0')}
+            )
         
-        self.stdout.write(f'  Created/Updated {created_count} assessment periods')
-    
-    def create_default_system_configurations(self, force=False):
-        """Create default system configurations"""
-        self.stdout.write('Creating default system configurations...')
-        
-        default_configs = [
+        # Create scoring rules
+        scoring_rules = [
             {
-                'key': 'scoring_defaults',
-                'config_type': 'scoring',
-                'value': '{"default_performance_type": "gap", "score_range": [-2, 2], "color_scheme": "traffic_light"}',
-                'description': 'Default scoring configuration'
+                'name': 'Excellent Performance',
+                'performance_type': 'gap',
+                'min_value': Decimal('-10'),
+                'max_value': Decimal('10'),
+                'score': 2,
+                'color': '#28a745',
+                'label': 'Excellent',
+                'priority': 1
             },
             {
-                'key': 'display_settings',
-                'config_type': 'display',
-                'value': '{"dashboard_refresh_interval": 300, "chart_colors": ["#007bff", "#28a745", "#ffc107", "#dc3545"], "show_percentages": true}',
-                'description': 'Display settings for dashboards and charts'
+                'name': 'Good Performance',
+                'performance_type': 'gap',
+                'min_value': Decimal('-20'),
+                'max_value': Decimal('-10'),
+                'score': 1,
+                'color': '#20c997',
+                'label': 'Good',
+                'priority': 2
             },
             {
-                'key': 'export_settings',
-                'config_type': 'export',
-                'value': '{"excel_template": "default", "pdf_template": "default", "include_charts": true, "include_metadata": true}',
-                'description': 'Export configuration settings'
+                'name': 'Sustained Performance',
+                'performance_type': 'gap',
+                'min_value': Decimal('-30'),
+                'max_value': Decimal('-20'),
+                'score': 0,
+                'color': '#ffc107',
+                'label': 'Sustained',
+                'priority': 3
             },
             {
-                'key': 'notification_settings',
-                'config_type': 'notification',
-                'value': '{"email_notifications": false, "dashboard_alerts": true, "score_threshold_alerts": [-1, -2]}',
-                'description': 'Notification and alert settings'
+                'name': 'Underperforming',
+                'performance_type': 'gap',
+                'min_value': Decimal('-50'),
+                'max_value': Decimal('-30'),
+                'score': -1,
+                'color': '#fd7e14',
+                'label': 'Underperforming',
+                'priority': 4
             },
             {
-                'key': 'dhis2_integration',
-                'config_type': 'integration',
-                'value': '{"default_instance_url": "https://dhims.chimgh.org/dhims", "timeout_seconds": 30, "retry_attempts": 3}',
-                'description': 'DHIS2 integration settings including default instance URL'
+                'name': 'Severely Underperforming',
+                'performance_type': 'gap',
+                'min_value': Decimal('-100'),
+                'max_value': Decimal('-50'),
+                'score': -2,
+                'color': '#dc3545',
+                'label': 'Severely Underperforming',
+                'priority': 5
             }
         ]
         
-        created_count = 0
-        for config_data in default_configs:
-            config, created = SystemConfiguration.objects.get_or_create(
-                key=config_data['key'],
-                defaults=config_data
+        for rule_data in scoring_rules:
+            rule, created = ScoringRule.objects.get_or_create(
+                name=rule_data['name'],
+                defaults=rule_data
             )
-            if created or force:
-                if force and not created:
-                    for key, value in config_data.items():
-                        setattr(config, key, value)
-                    config.save()
-                created_count += 1
-                self.stdout.write(f'  ✓ Created/Updated: {config.key}')
         
-        self.stdout.write(f'  Created/Updated {created_count} system configurations') 
+        # Create sample assessment periods
+        periods = [
+            {
+                'name': '2023 Q2',
+                'period_type': 'quarterly',
+                'start_date': date(2023, 4, 1),
+                'end_date': date(2023, 6, 30),
+                'is_active': True,
+                'is_current': False
+            },
+            {
+                'name': '2024 Q2',
+                'period_type': 'quarterly',
+                'start_date': date(2024, 4, 1),
+                'end_date': date(2024, 6, 30),
+                'is_active': True,
+                'is_current': True
+            },
+            {
+                'name': '2025 Q2',
+                'period_type': 'quarterly',
+                'start_date': date(2025, 4, 1),
+                'end_date': date(2025, 6, 30),
+                'is_active': True,
+                'is_current': False
+            }
+        ]
+        
+        for period_data in periods:
+            period, created = AssessmentPeriod.objects.get_or_create(
+                name=period_data['name'],
+                defaults=period_data
+            )
+        
+        self.stdout.write(
+            self.style.SUCCESS(
+                f'Successfully initialized default configurations:\n'
+                f'- {Milestone.objects.count()} milestones\n'
+                f'- {Objective.objects.count()} objectives\n'
+                f'- {TrackedIndicator.objects.count()} indicators\n'
+                f'- {ScoringRule.objects.count()} scoring rules\n'
+                f'- {AssessmentPeriod.objects.count()} assessment periods'
+            )
+        ) 

@@ -28,6 +28,17 @@ class TrackedIndicator(models.Model):
         help_text="Type of DHIS2 object"
     )
     
+    # Excel structure support
+    indicator_number = models.CharField(
+        max_length=20,
+        blank=True,
+        help_text="Indicator number in Excel format (e.g., '1.1', '1.2')"
+    )
+    display_order = models.PositiveIntegerField(
+        default=0,
+        help_text="Display order within objective"
+    )
+    
     # Formula and calculation
     formula = models.TextField(
         blank=True,
@@ -96,10 +107,10 @@ class TrackedIndicator(models.Model):
         db_table = 'tracked_indicators'
         verbose_name = 'Tracked Indicator'
         verbose_name_plural = 'Tracked Indicators'
-        ordering = ['name']
+        ordering = ['display_order', 'name']
     
     def __str__(self):
-        return f"{self.name} ({self.dhis2_uid})"
+        return f"{self.indicator_number} - {self.name}" if self.indicator_number else self.name
     
     def get_formula_components(self):
         """

@@ -1,0 +1,28 @@
+{% extends "admin/change_list.html" %}
+{% load i18n admin_urls %}
+
+{% block object-tools-items %}
+    <li>
+        <a href="{% url 'admin:trackedindicator_import_template' %}" class="addlink">
+            📥 Download Import Template
+        </a>
+    </li>
+    <li>
+        <a href="{% url 'admin:trackedindicator_export_template' %}" class="addlink">
+            📤 Export Current Data
+        </a>
+    </li>
+    {{ block.super }}
+{% endblock %}
+
+{% block content %}
+    <div class="module aligned">
+        <div class="description">
+            <h3>📋 Import/Export Instructions</h3>
+            <p><strong>Import Template:</strong> Download the template, fill in your indicator data with correct DHIS2 UIDs, and import it back.</p>
+            <p><strong>Export Current Data:</strong> Download all current indicators as a template for backup or modification.</p>
+            <p><strong>Note:</strong> DHIS2 UID is the unique identifier and is used to match existing records during import.</p>
+        </div>
+    </div>
+    {{ block.super }}
+{% endblock %} 
