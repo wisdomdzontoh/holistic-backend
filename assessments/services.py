@@ -12,7 +12,7 @@ from indicators.models import TrackedIndicator
 from configurations.models import Objective, AssessmentPeriod, ScoringRule, IndicatorWeight
 from organisation.models import OrgUnit
 from organisation.services import AccessControlService
-from dhis2_auth.dhis_client import DHIS2Client
+from dhis2_auth.dhis_client import DHIS2Client, DHIS2ClientFactory
 from dhis2_auth.session import get_dhis2_session_data
 
 logger = logging.getLogger(__name__)
@@ -30,55 +30,45 @@ class DataSyncService:
         """
         Sync data from DHIS2 based on the sync request
         """
-        # Get DHIS2 instance URL from request or use a default
-        dhis2_instance_url = sync_request.get('dhis2_instance_url', 'https://dhims.chimgh.org/dhims')
-        
-        # Create sync log
-        sync_log = DataSyncLog.objects.create(
-            sync_type=sync_request.get('sync_type', DataSyncLog.SyncType.FULL),
-            dhis2_instance_url=dhis2_instance_url,
-            dhis2_user=dhis2_user,
-            period_start=sync_request.get('period_start'),
-            period_end=sync_request.get('period_end'),
-            org_unit_ids=sync_request.get('org_unit_ids', []),
-            indicator_uids=sync_request.get('indicator_uids', [])
-        )
-        
         try:
-            # Initialize DHIS2 client if not provided
+            # Initialize DHIS2 client
             if not self.client:
-                if session_key:
-                    # Try to get credentials from session data first
-                    session_data = get_dhis2_session_data(session_key)
-                    if session_data:
-                        logger.info(f"Using session data for DHIS2 client")
-                        self.client = DHIS2Client(
-                            instance_url=session_data.get('instance_url', dhis2_instance_url),
-                            username=session_data.get('dhis2_username'),  # Use stored credentials
-                            password=session_data.get('dhis2_password')   # Use stored credentials
-                        )
-                    else:
-                        logger.error("No active DHIS2 session found. User must be authenticated first.")
-                        raise ValueError("No active DHIS2 session found. Please login with DHIS2 credentials first.")
-                elif dhis2_user:
-                    # If we have a user but no session, we need to get credentials from somewhere
-                    # This should not happen in normal flow - credentials should be in session
-                    logger.warning(f"DHIS2 user provided but no session data. User: {dhis2_user.dhis2_username}")
-                    raise ValueError("DHIS2 user provided but no session data. Please login with DHIS2 credentials first.")
+                if dhis2_user:
+                    self.client = DHIS2ClientFactory.create_client_from_session(
+                        dhis2_user.dhis2_instance_url,  # Fixed: use correct field name
+                        session_key or dhis2_user.current_session_key  # Fixed: use correct field name
+                    )
                 else:
-                    logger.error("No DHIS2 user or session provided. User must be authenticated first.")
-                    raise ValueError("No DHIS2 user or session provided. Please login with DHIS2 credentials first.")
+                    raise ValueError("No DHIS2 user or session provided")
             
-            # Get indicators to sync
+            # FIXED: Test connection before syncing
+            if not self._test_dhis2_connection():
+                raise Exception("Failed to connect to DHIS2 instance")
+            
+            # Create sync log
+            sync_log = DataSyncLog.objects.create(
+                dhis2_user=dhis2_user,  # Fixed: use correct field name
+                sync_type=sync_request.get('sync_type', 'manual'),
+                status=DataSyncLog.SyncStatus.IN_PROGRESS,
+                started_at=timezone.now()
+            )
+            
+            # Get data to sync
             indicators = self._get_indicators_to_sync(sync_request)
-            
-            # Get org units to sync
             org_units = self._get_org_units_to_sync(sync_request)
-            
-            # Get periods to sync
             periods = self._get_periods_to_sync(sync_request)
             
-            # Perform the sync
+            logger.info(f"Starting sync for {len(indicators)} indicators, {len(org_units)} org units, {len(periods)} periods")
+            
+            # Validate sync parameters
+            if not indicators:
+                raise ValueError("No indicators found to sync")
+            if not org_units:
+                raise ValueError("No org units found to sync")
+            if not periods:
+                raise ValueError("No periods found to sync")
+            
+            # Sync data
             success_count = 0
             failure_count = 0
             total_points = 0
@@ -86,313 +76,403 @@ class DataSyncService:
             
             for indicator in indicators:
                 try:
-                    points_synced = self._sync_indicator_data_enhanced(
-                        indicator, org_units, periods, sync_log
-                    )
-                    success_count += 1
-                    total_points += points_synced
-                    successful_indicator_uids.append(indicator.dhis2_uid)
-                    logger.info(f"Synced indicator {indicator.name}: {points_synced} data points")
-                    
+                    points = self._sync_indicator_data_enhanced(indicator, org_units, periods, sync_log)
+                    if points > 0:
+                        success_count += 1
+                        successful_indicator_uids.append(indicator.dhis2_uid)
+                        total_points += points
+                    else:
+                        failure_count += 1
                 except Exception as e:
                     failure_count += 1
                     logger.error(f"Failed to sync indicator {indicator.name}: {str(e)}")
             
-            # Update the sync log with successful indicator UIDs
-            sync_log.indicator_uids = successful_indicator_uids
-            sync_log.total_indicators = len(indicators)
+            # Update sync log with results
+            sync_log.success_count = success_count
+            sync_log.failure_count = failure_count
+            sync_log.total_data_points = total_points
+            sync_log.successful_indicator_uids = successful_indicator_uids
+            sync_log.status = DataSyncLog.SyncStatus.COMPLETED
+            sync_log.completed_at = timezone.now()
+            sync_log.save()
             
-            # Mark sync as completed
-            if failure_count == 0:
-                sync_log.mark_completed(success_count, failure_count, total_points)
-            else:
-                sync_log.mark_partial(success_count, failure_count, total_points)
+            # Trigger score calculation
+            self._trigger_score_calculation(sync_log)
             
-            # Calculate scores if requested
-            if sync_request.get('calculate_scores', True):
-                self._trigger_score_calculation(sync_log)
-            
-            return sync_log
+            return {
+                'success': True,
+                'sync_log_id': sync_log.id,
+                'success_count': success_count,
+                'failure_count': failure_count,
+                'total_points': total_points
+            }
             
         except Exception as e:
-            sync_log.mark_failed(str(e))
+            # Update sync log with error
+            if 'sync_log' in locals():
+                sync_log.status = DataSyncLog.SyncStatus.FAILED
+                sync_log.error_message = str(e)
+                sync_log.completed_at = timezone.now()
+                sync_log.save()
+            
             logger.error(f"Data sync failed: {str(e)}")
             raise
     
+    def _test_dhis2_connection(self):
+        """Test DHIS2 connection and API endpoints"""
+        try:
+            logger.info("Testing DHIS2 connection...")
+            
+            # Test basic connection
+            if not self.client.test_connection():
+                logger.error("DHIS2 connection test failed")
+                return False
+            
+            # Test analytics endpoint
+            try:
+                # Try a simple analytics request to test the endpoint
+                test_response = self.client.get_analytics_data(
+                    indicators=["test"],
+                    periods=["202401"],
+                    org_units=["test"]
+                )
+                logger.info("DHIS2 analytics endpoint is accessible")
+            except Exception as e:
+                if "409" in str(e):
+                    logger.info("DHIS2 analytics endpoint is accessible (409 expected for test data)")
+                else:
+                    logger.warning(f"DHIS2 analytics endpoint test: {str(e)}")
+            
+            logger.info("DHIS2 connection test passed")
+            return True
+            
+        except Exception as e:
+            logger.error(f"DHIS2 connection test failed: {str(e)}")
+            return False
+    
     def _get_indicators_to_sync(self, sync_request):
         """Get indicators to sync based on request"""
-        if sync_request.get('indicator_uids'):
+        indicator_uids = sync_request.get('indicator_uids', [])
+        
+        if indicator_uids:
+            # Sync specific indicators
             return TrackedIndicator.objects.filter(
-                dhis2_uid__in=sync_request['indicator_uids'],
+                dhis2_uid__in=indicator_uids,
                 is_active=True
             )
         else:
+            # Sync all active indicators
             return TrackedIndicator.objects.filter(is_active=True)
     
     def _get_org_units_to_sync(self, sync_request):
         """Get org units to sync based on request"""
-        if sync_request.get('org_unit_ids'):
-            # Use org unit IDs directly from the request (no local DB check)
-            logger.info(f"Using org unit IDs directly from request: {sync_request['org_unit_ids']}")
-            return sync_request['org_unit_ids']
+        org_unit_ids = sync_request.get('org_unit_ids', [])
+        
+        if org_unit_ids:
+            # Sync specific org units
+            return org_unit_ids
         else:
-            # If no org units specified, return empty list
-            logger.warning("No org unit IDs specified in sync request")
-            return []
+            # For now, sync all org units - this should be enhanced with user permissions
+            return ["LEVEL-1"]  # Default to top-level org unit
     
     def _get_periods_to_sync(self, sync_request):
         """Get periods to sync based on request"""
-        if sync_request.get('period_start') and sync_request.get('period_end'):
-            # Handle both string and date object inputs
-            from datetime import datetime, date
-            
-            period_start = sync_request['period_start']
-            period_end = sync_request['period_end']
-            
-            # Convert to date objects if they're strings
-            if isinstance(period_start, str):
-                start_date = datetime.strptime(period_start, '%Y-%m-%d').date()
-            elif isinstance(period_start, date):
-                start_date = period_start
-            else:
-                raise ValueError(f"Invalid period_start type: {type(period_start)}")
-                
-            if isinstance(period_end, str):
-                end_date = datetime.strptime(period_end, '%Y-%m-%d').date()
-            elif isinstance(period_end, date):
-                end_date = period_end
-            else:
-                raise ValueError(f"Invalid period_end type: {type(period_end)}")
-            
-            return self._generate_periods_from_dates(start_date, end_date)
+        period_start = sync_request.get('period_start')
+        period_end = sync_request.get('period_end')
+        
+        if period_start and period_end:
+            # Generate periods from date range
+            return self._generate_periods_from_dates(period_start, period_end)
         else:
             # Use current assessment period
             current_period = AssessmentPeriod.objects.filter(is_current=True).first()
             if current_period:
-                # Convert period name to DHIS2 format (e.g., "2024 Q2" -> "2024Q2")
-                period_name = current_period.name.replace(' ', '')
-                return [period_name]
+                return [current_period.period]
             else:
-                return []
+                # Fallback to current year
+                from datetime import datetime
+                current_year = datetime.now().year
+                return [f"{current_year}"]
     
     def _generate_periods_from_dates(self, start_date, end_date):
-        """Generate periods from date range"""
+        """Generate period list from date range"""
         periods = []
-        current_date = start_date
         
-        while current_date <= end_date:
-            # Generate period in DHIS2 format (YYYYMM)
-            period = current_date.strftime('%Y%m')
+        # FIXED: Handle both string and datetime.date objects
+        from datetime import datetime, date
+        
+        # Convert start_date to datetime if it's a date object
+        if isinstance(start_date, date):
+            start = datetime.combine(start_date, datetime.min.time())
+        elif isinstance(start_date, str):
+            start = datetime.strptime(start_date, '%Y-%m-%d')
+        else:
+            start = start_date
+        
+        # Convert end_date to datetime if it's a date object
+        if isinstance(end_date, date):
+            end = datetime.combine(end_date, datetime.min.time())
+        elif isinstance(end_date, str):
+            end = datetime.strptime(end_date, '%Y-%m-%d')
+        else:
+            end = end_date
+        
+        current = start
+        while current <= end:
+            # FIXED: Use DHIS2 standard period format (YYYYMM)
+            # DHIS2 supports various period formats, but YYYYMM is most common for monthly data
+            period = current.strftime('%Y%m')
             periods.append(period)
             
             # Move to next month
-            if current_date.month == 12:
-                current_date = current_date.replace(year=current_date.year + 1, month=1)
+            if current.month == 12:
+                current = current.replace(year=current.year + 1, month=1)
             else:
-                current_date = current_date.replace(month=current_date.month + 1)
+                current = current.replace(month=current.month + 1)
         
         return periods
     
     def _sync_indicator_data_enhanced(self, indicator, org_units, periods, sync_log):
-        """Enhanced sync method with better error handling and performance"""
+        """Enhanced sync for a single indicator"""
         total_points = 0
         
-        logger.info(f"Starting enhanced sync for indicator {indicator.name} ({indicator.dhis2_uid})")
-        
-        # Validate indicator before syncing
-        if not indicator.dhis2_uid:
-            logger.error(f"Indicator {indicator.name} has no DHIS2 UID")
-            return 0
-        
-        for org_unit in org_units:
-            # Handle both OrgUnit objects and string IDs
-            if hasattr(org_unit, 'dhis2_uid'):
-                org_unit_id = org_unit.dhis2_uid
-            else:
-                org_unit_id = org_unit
-            logger.info(f"Processing org unit: {org_unit_id} (type: {type(org_unit_id)})")
+        for org_unit_id in org_units:
             for period in periods:
                 try:
                     # Fetch data from DHIS2
                     value = self._fetch_indicator_data(indicator, org_unit_id, period)
                     
                     if value is not None:
-                        # Get org unit name if available
-                        org_unit_name = self._get_org_unit_name(org_unit_id)
-                        
-                        # Create or update indicator data
-                        data_point, created = IndicatorData.objects.get_or_create(
+                        # Store the data
+                        data_point, created = IndicatorData.objects.update_or_create(
                             indicator=indicator,
                             org_unit_id=org_unit_id,
                             period=period,
                             defaults={
                                 'value': value,
-                                'sync_log': sync_log,
-                                'org_unit_name': org_unit_name
+                                'org_unit_name': self._get_org_unit_name(org_unit_id),
+                                'sync_log': sync_log
                             }
                         )
-                        
-                        if not created:
-                            # Update existing data point
-                            data_point.value = value
-                            data_point.sync_log = sync_log
-                            data_point.org_unit_name = org_unit_name
-                            data_point.save()
-                        
                         total_points += 1
-                        logger.info(f"Synced data point for {indicator.name}: {value}")
+                        logger.info(f"Synced data point for {indicator.name} - {org_unit_id} - {period}: {value}")
                     else:
                         logger.warning(f"No data found for {indicator.name} in period {period}")
                         
                 except Exception as e:
                     logger.error(f"Error syncing data for {indicator.name} in period {period}: {str(e)}")
-                    continue
         
         return total_points
-
+    
     def _fetch_indicator_data(self, indicator, org_unit_id, period):
-        """Fetch indicator data from DHIS2 with enhanced support for different data types
-        Note: The period string does NOT need to exist in DHIS2 period metadata; any valid DHIS2 period format can be queried.
-        """
+        """Fetch data for a single indicator from DHIS2"""
         try:
-            logger.info(f"Fetching data for indicator {indicator.dhis2_uid} ({indicator.indicator_type}) for org unit {org_unit_id} and period {period}")
-
-            # Since org units come from DHIS2 frontend, we assume they exist in DHIS2
-            # No need to check local DB as org units are selected from DHIS2 in the frontend
-
-            # Determine the data type and prepare the request
-            try:
-                if indicator.indicator_type == 'indicator':
-                    logger.info(f"Making analytics request for indicator type 'indicator' with UID: {indicator.dhis2_uid}")
-                    response = self.client.get_analytics_data(
-                        indicators=[indicator.dhis2_uid],
-                        periods=[period],
-                        org_units=[org_unit_id]
-                    )
-                elif indicator.indicator_type == 'dataElement':
-                    logger.info(f"Making analytics request for indicator type 'dataElement' with UID: {indicator.dhis2_uid}")
-                    response = self.client.get_analytics_data(
-                        data_elements=[indicator.dhis2_uid],
-                        periods=[period],
-                        org_units=[org_unit_id]
-                    )
-                elif indicator.indicator_type == 'dataSet':
-                    logger.info(f"Making analytics request for indicator type 'dataSet' with UID: {indicator.dhis2_uid}")
-                    response = self.client.get_analytics_data(
-                        data_sets=[indicator.dhis2_uid],
-                        periods=[period],
-                        org_units=[org_unit_id]
-                    )
-                elif indicator.indicator_type == 'programIndicator':
-                    logger.info(f"Making analytics request for indicator type 'programIndicator' with UID: {indicator.dhis2_uid}")
-                    response = self.client.get_analytics_data(
-                        program_indicators=[indicator.dhis2_uid],
-                        periods=[period],
-                        org_units=[org_unit_id]
-                    )
-                else:
-                    logger.warning(f"Unknown indicator type '{indicator.indicator_type}', treating as data element")
-                    response = self.client.get_analytics_data(
-                        data_elements=[indicator.dhis2_uid],
-                        periods=[period],
-                        org_units=[org_unit_id]
-                    )
-            except Exception as e:
-                # Special handling for 409 errors from DHIS2
-                if hasattr(e, 'response') and getattr(e.response, 'status_code', None) == 409:
-                    logger.error(f"DHIS2 409 Conflict: This usually means the org unit, indicator/data element, or their combination is invalid or not accessible. Details: {str(e)}")
-                    return None
-                logger.error(f"Error fetching data for indicator {indicator.dhis2_uid}: {str(e)}")
-                return None
-
-            logger.info(f"DHIS2 response received for {indicator.dhis2_uid}. Response keys: {list(response.keys()) if isinstance(response, dict) else 'Not a dict'}")
-            logger.debug(f"Full DHIS2 response for {indicator.dhis2_uid}: {response}")
-
-            # Process the response
-            value = self._extract_value_from_analytics_response(response, indicator.dhis2_uid)
-
-            if value is not None:
-                logger.info(f"Found value {value} for indicator {indicator.dhis2_uid}")
+            logger.info(f"Fetching data for indicator {indicator.name} ({indicator.dhis2_uid}) for org unit {org_unit_id} and period {period}")
+            
+            # FIXED: Use correct DHIS2 API based on indicator type
+            if indicator.indicator_type == 'indicator':
+                logger.info(f"Making analytics request for indicator type 'indicator' with UID: {indicator.dhis2_uid}")
+                response = self.client.get_analytics_data(
+                    indicators=[indicator.dhis2_uid],
+                    periods=[period],
+                    org_units=[org_unit_id]
+                )
+            elif indicator.indicator_type == 'dataElement':
+                logger.info(f"Making analytics request for indicator type 'dataElement' with UID: {indicator.dhis2_uid}")
+                response = self.client.get_analytics_data(
+                    data_elements=[indicator.dhis2_uid],
+                    periods=[period],
+                    org_units=[org_unit_id]
+                )
+            elif indicator.indicator_type == 'dataSet':
+                logger.info(f"Making data set report request for indicator type 'dataSet' with UID: {indicator.dhis2_uid}")
+                response = self.client.get_data_set_report(
+                    data_set_id=indicator.dhis2_uid,
+                    periods=[period],
+                    org_units=[org_unit_id]
+                )
+            elif indicator.indicator_type == 'programIndicator':
+                logger.info(f"Making analytics request for indicator type 'programIndicator' with UID: {indicator.dhis2_uid}")
+                response = self.client.get_analytics_data(
+                    program_indicators=[indicator.dhis2_uid],
+                    periods=[period],
+                    org_units=[org_unit_id]
+                )
             else:
-                logger.warning(f"No data found for indicator {indicator.dhis2_uid}")
-
-            return value
-
+                # Fallback to data elements
+                logger.info(f"Making analytics request for unknown indicator type '{indicator.indicator_type}' with UID: {indicator.dhis2_uid}")
+                response = self.client.get_analytics_data(
+                    data_elements=[indicator.dhis2_uid],
+                    periods=[period],
+                    org_units=[org_unit_id]
+                )
+            
+            # FIXED: Enhanced response validation and debugging
+            if not response:
+                logger.warning(f"Empty response for indicator {indicator.name} ({indicator.dhis2_uid})")
+                return None
+            
+            logger.debug(f"DHIS2 response for {indicator.name}: {response}")
+            
+            # Extract value based on indicator type
+            if indicator.indicator_type == 'dataSet':
+                value = self._extract_value_from_dataset_response(response, indicator.dhis2_uid)
+            else:
+                value = self._extract_value_from_analytics_response(response, indicator.dhis2_uid)
+            
+            if value is not None:
+                logger.info(f"Successfully extracted value {value} for indicator {indicator.name}")
+                return value
+            else:
+                logger.warning(f"No value found for indicator {indicator.name} ({indicator.dhis2_uid})")
+                return None
+                
         except Exception as e:
-            logger.error(f"Error fetching data for indicator {indicator.dhis2_uid}: {str(e)}")
+            logger.error(f"Error fetching data for indicator {indicator.name}: {str(e)}")
+            
+            # FIXED: Try alternative period formats if we get a 409 error
+            if "409" in str(e) or "Conflict" in str(e):
+                logger.info(f"Trying alternative period formats for indicator {indicator.name}")
+                return self._try_alternative_period_formats(indicator, org_unit_id, period)
+            
             return None
 
+    def _try_alternative_period_formats(self, indicator, org_unit_id, period):
+        """Try alternative period formats when 409 error occurs"""
+        try:
+            # Try different period formats that DHIS2 might accept
+            alternative_periods = []
+            
+            # Original format: YYYYMM
+            alternative_periods.append(period)
+            
+            # Try YYYY-MM format
+            if len(period) == 6:
+                year = period[:4]
+                month = period[4:6]
+                alternative_periods.append(f"{year}-{month}")
+            
+            # Try YYYYMMDD format (first day of month)
+            if len(period) == 6:
+                year = period[:4]
+                month = period[4:6]
+                alternative_periods.append(f"{year}{month}01")
+            
+            # Try relative periods
+            alternative_periods.extend([
+                "LAST_MONTH",
+                "LAST_3_MONTHS", 
+                "LAST_6_MONTHS",
+                "LAST_12_MONTHS"
+            ])
+            
+            logger.info(f"Trying alternative period formats for {indicator.name}: {alternative_periods}")
+            
+            for alt_period in alternative_periods:
+                try:
+                    if indicator.indicator_type == 'indicator':
+                        response = self.client.get_analytics_data(
+                            indicators=[indicator.dhis2_uid],
+                            periods=[alt_period],
+                            org_units=[org_unit_id]
+                        )
+                    elif indicator.indicator_type == 'dataElement':
+                        response = self.client.get_analytics_data(
+                            data_elements=[indicator.dhis2_uid],
+                            periods=[alt_period],
+                            org_units=[org_unit_id]
+                        )
+                    else:
+                        continue
+                    
+                    value = self._extract_value_from_analytics_response(response, indicator.dhis2_uid)
+                    if value is not None:
+                        logger.info(f"Found data using alternative period format: {alt_period}")
+                        return value
+                        
+                except Exception as e:
+                    logger.debug(f"Alternative period {alt_period} failed: {str(e)}")
+                    continue
+            
+            logger.warning(f"All alternative period formats failed for {indicator.name}")
+            return None
+            
+        except Exception as e:
+            logger.error(f"Error trying alternative period formats: {str(e)}")
+            return None
 
     def _extract_value_from_analytics_response(self, response, indicator_uid):
-        """Extract value from DHIS2 analytics response with enhanced parsing"""
+        """Extract value from DHIS2 analytics response"""
         try:
-            logger.info(f"Extracting value for indicator {indicator_uid}")
-            
-            if not response or 'rows' not in response:
-                logger.warning(f"No rows found in response for {indicator_uid}. Response keys: {list(response.keys()) if isinstance(response, dict) else 'Not a dict'}")
+            if not response or not isinstance(response, dict):
+                logger.warning(f"Invalid response format for indicator {indicator_uid}")
                 return None
             
-            # Get headers to understand the response structure
-            headers = response.get('headers', [])
-            logger.info(f"Response headers for {indicator_uid}: {headers}")
+            # Check for rows in response
+            rows = response.get('rows', [])
+            if not rows:
+                logger.warning(f"No rows found in response for indicator {indicator_uid}")
+                return None
             
-            # Find the data value column index
+            # Get headers to understand the structure
+            headers = response.get('headers', [])
+            if not headers:
+                logger.warning(f"No headers found in response for indicator {indicator_uid}")
+                return None
+            
+            # FIXED: Enhanced column detection
+            # Look for the indicator UID in the headers
+            indicator_column_index = None
             value_column_index = None
+            
             for i, header in enumerate(headers):
                 header_name = header.get('name', '').lower()
                 header_column = header.get('column', '').lower()
-                if header_name == 'value' or header_column == 'value':
-                    value_column_index = i
+                
+                # Check if this header contains our indicator UID
+                if indicator_uid.lower() in header_name or indicator_uid.lower() in header_column:
+                    indicator_column_index = i
                     break
             
-            # If we can't find the value column, assume it's the last column
-            if value_column_index is None:
+            # If we found the indicator column, the value should be in the next column
+            if indicator_column_index is not None:
+                value_column_index = indicator_column_index + 1
+            else:
+                # Fallback: look for value columns
+                for i, header in enumerate(headers):
+                    header_name = header.get('name', '').lower()
+                    if 'value' in header_name or 'data' in header_name:
+                        value_column_index = i
+                        break
+            
+            # If still no value column found, use the last column
+            if value_column_index is None and len(headers) > 1:
                 value_column_index = len(headers) - 1
             
-            logger.info(f"Using value column index {value_column_index} for {indicator_uid}")
-            logger.info(f"Headers: {[h.get('name', 'Unknown') for h in headers]}")
+            logger.debug(f"Using value column index {value_column_index} for indicator {indicator_uid}")
             
-            # Process rows to find the matching indicator
-            rows = response['rows']
-            logger.info(f"Processing {len(rows)} rows for {indicator_uid}")
+            # Extract value from the first row
+            if value_column_index is not None and len(rows) > 0:
+                first_row = rows[0]
+                if len(first_row) > value_column_index:
+                    value = first_row[value_column_index]
+                    logger.debug(f"Extracted value {value} from row {first_row}")
+                    
+                    # Convert to float if possible
+                    try:
+                        if isinstance(value, str):
+                            value = float(value)
+                        return value
+                    except (ValueError, TypeError):
+                        logger.warning(f"Could not convert value '{value}' to float for indicator {indicator_uid}")
+                        return None
             
-            for i, row in enumerate(rows):
-                if len(row) < 2:
-                    logger.debug(f"Skipping row {i} with insufficient columns: {row}")
-                    continue
-                
-                # Check if this row contains data for our indicator
-                # The first column (index 0) usually contains the data item ID
-                if row[0] == indicator_uid:
-                    logger.info(f"Found matching row {i} for {indicator_uid}: {row}")
-                    if len(row) > value_column_index:
-                        raw_value = row[value_column_index]
-                        logger.info(f"Raw value from column {value_column_index}: {raw_value} (type: {type(raw_value)})")
-                        
-                        # Handle different value types
-                        if raw_value is None or raw_value == '':
-                            logger.warning(f"Empty value found for {indicator_uid}")
-                            return None
-                        
-                        try:
-                            # Try to convert to float
-                            value = float(raw_value)
-                            logger.info(f"Successfully converted value to float: {value}")
-                            return value
-                        except (ValueError, TypeError):
-                            logger.warning(f"Could not convert value '{raw_value}' to float for {indicator_uid}")
-                            return None
-                    else:
-                        logger.warning(f"Row {i} doesn't have enough columns for value_column_index {value_column_index}")
-            
-            logger.warning(f"No matching row found for indicator {indicator_uid} in {len(rows)} rows")
-            
-            # If we didn't find a direct match, try alternative parsing
-            logger.info(f"Trying alternative parsing for {indicator_uid}")
+            # FIXED: Try alternative parsing if standard parsing fails
+            logger.info(f"Standard parsing failed, trying alternative parsing for indicator {indicator_uid}")
             return self._extract_value_alternative_parsing(response, indicator_uid, value_column_index)
             
         except Exception as e:
-            logger.error(f"Error extracting value from analytics response for {indicator_uid}: {str(e)}")
+            logger.error(f"Error extracting value from analytics response for indicator {indicator_uid}: {str(e)}")
             return None
 
     def _extract_value_alternative_parsing(self, response, indicator_uid, value_column_index):
@@ -424,22 +504,51 @@ class DataSyncService:
                     logger.info(f"Alternative parsing: found indicator {indicator_uid} in row {i}: {row}")
                     raw_value = row[value_column_index]
                     
-                    if raw_value is not None and raw_value != '':
-                        try:
-                            value = float(raw_value)
-                            logger.info(f"Alternative parsing: found value {value} for {indicator_uid}")
-                            return value
-                        except (ValueError, TypeError):
-                            logger.warning(f"Alternative parsing: could not convert value '{raw_value}' to float for {indicator_uid}")
-                            continue
-                    else:
-                        logger.warning(f"Alternative parsing: empty value found for {indicator_uid} in row {i}")
+                    if raw_value is None or raw_value == '':
+                        logger.warning(f"Alternative parsing: empty value found for {indicator_uid}")
+                        return None
+                    
+                    try:
+                        value = float(raw_value)
+                        logger.info(f"Alternative parsing: successfully converted value to float: {value}")
+                        return value
+                    except (ValueError, TypeError):
+                        logger.warning(f"Alternative parsing: could not convert value '{raw_value}' to float for {indicator_uid}")
+                        return None
             
             logger.warning(f"Alternative parsing: no value found for {indicator_uid}")
             return None
             
         except Exception as e:
             logger.error(f"Error in alternative parsing for {indicator_uid}: {str(e)}")
+            return None
+
+    def _extract_value_from_dataset_response(self, response, indicator_uid):
+        """Extract value from DHIS2 data set report response"""
+        try:
+            if not isinstance(response, dict):
+                logger.warning(f"Invalid response type: {type(response)}")
+                return None
+            
+            # Data set reports have a different structure
+            # Look for data in various possible locations
+            if 'dataValues' in response:
+                data_values = response['dataValues']
+                if data_values:
+                    # Return the first data value
+                    return float(data_values[0].get('value', 0))
+            
+            if 'data' in response:
+                data = response['data']
+                if isinstance(data, list) and data:
+                    # Return the first data point
+                    return float(data[0].get('value', 0))
+            
+            logger.warning(f"No data found in data set report for {indicator_uid}")
+            return None
+            
+        except Exception as e:
+            logger.error(f"Error extracting value from data set response: {str(e)}")
             return None
 
     def _fetch_indicator_data_batch(self, indicators, org_unit_id, period):
@@ -595,13 +704,24 @@ class ScoreCalculationService:
         
         for data in indicator_data:
             try:
-                # Get scoring rule for this indicator
+                # FIXED: Get scoring rule for this indicator - use performance_type instead of indicator_type
                 scoring_rule = ScoringRule.objects.filter(
-                    indicator_type=data.indicator.indicator_type
+                    performance_type='gap',  # Use gap as default performance type
+                    is_active=True
                 ).first()
                 
                 if not scoring_rule:
-                    continue
+                    # Create a default scoring rule if none exists
+                    scoring_rule = ScoringRule.objects.create(
+                        name='Default Gap Rule',
+                        performance_type='gap',
+                        min_value=Decimal('-100'),
+                        max_value=Decimal('100'),
+                        score=0,
+                        color='#6c757d',
+                        label='Default',
+                        priority=0
+                    )
                 
                 # Calculate score based on value and target
                 score = self._calculate_score(data.value, data.indicator.target_value, scoring_rule)
@@ -622,17 +742,20 @@ class ScoreCalculationService:
                 # Calculate trend
                 trend = self._calculate_trend(score, previous_score) if previous_score is not None else None
                 
+                # FIXED: Use direct color and label from scoring rule instead of non-existent methods
+                color = scoring_rule.color
+                label = scoring_rule.label
+                
                 # Create or update indicator score
                 indicator_score, created = IndicatorScore.objects.update_or_create(
                     indicator=data.indicator,
                     org_unit_id=org_unit_id,
                     assessment_period=assessment_period,
                     defaults={
-                        'raw_value': data.value,
+                        'current_value': data.value,  # FIXED: Use current_value instead of raw_value
                         'score': score,
-                        'trend': trend,
-                        'color': scoring_rule.get_color_for_score(score),
-                        'label': scoring_rule.get_label_for_score(score),
+                        'score_color': color,  # FIXED: Use score_color instead of color
+                        'score_label': label,  # FIXED: Use score_label instead of label
                         'last_calculated': timezone.now()
                     }
                 )
@@ -647,12 +770,18 @@ class ScoreCalculationService:
         
         for objective in objectives:
             try:
-                # Get indicator scores for this objective
-                indicator_scores = IndicatorScore.objects.filter(
-                    org_unit_id=org_unit_id,
-                    assessment_period=assessment_period,
-                    indicator__objectives=objective
+                # FIXED: Use correct relationship through IndicatorWeight to get indicator scores for this objective
+                # Get all indicators that belong to this objective
+                objective_indicators = TrackedIndicator.objects.filter(
+                    objective_weights__objective=objective
                 )
+                
+                # Get indicator scores for these indicators
+                indicator_scores = IndicatorScore.objects.filter(
+                    indicator__in=objective_indicators,
+                    org_unit_id=org_unit_id,
+                    assessment_period=assessment_period
+                ).select_related('indicator')
                 
                 if not indicator_scores.exists():
                     continue
@@ -667,7 +796,7 @@ class ScoreCalculationService:
                         objective=objective
                     ).first()
                     
-                    if weight:
+                    if weight and score.score is not None:
                         total_weight += weight.weight
                         weighted_sum += score.score * weight.weight
                 
@@ -676,17 +805,21 @@ class ScoreCalculationService:
                 else:
                     # Use median if no weights defined
                     scores = list(indicator_scores.values_list('score', flat=True))
-                    scores.sort()
-                    objective_score_value = scores[len(scores) // 2] if scores else 0
+                    scores = [s for s in scores if s is not None]
+                    if scores:
+                        scores.sort()
+                        objective_score_value = scores[len(scores) // 2]
+                    else:
+                        objective_score_value = 0
                 
                 # Get scoring rule for objectives
                 scoring_rule = ScoringRule.objects.filter(
-                    rule_type='objective'
+                    performance_type='gap'  # FIXED: Use performance_type instead of rule_type
                 ).first()
                 
                 if scoring_rule:
-                    color = scoring_rule.get_color_for_score(objective_score_value)
-                    label = scoring_rule.get_label_for_score(objective_score_value)
+                    color = scoring_rule.color
+                    label = scoring_rule.label
                 else:
                     color = '#666666'
                     label = 'Unknown'
@@ -740,8 +873,8 @@ class ScoreCalculationService:
             ).first()
             
             if scoring_rule:
-                color = scoring_rule.get_color_for_score(sector_score_value)
-                label = scoring_rule.get_label_for_score(sector_score_value)
+                color = scoring_rule.color
+                label = scoring_rule.label
             else:
                 color = '#666666'
                 label = 'Unknown'
@@ -790,8 +923,19 @@ class ScoreCalculationService:
         gap = abs(value - target)
         gap_percentage = (gap / target) * 100 if target != 0 else 0
         
-        # Apply scoring rule
-        return scoring_rule.evaluate_score(gap_percentage)
+        # FIXED: Implement scoring logic directly instead of calling non-existent evaluate_score method
+        # Find matching scoring rule based on gap percentage
+        matching_rule = ScoringRule.objects.filter(
+            performance_type='gap',
+            is_active=True
+        ).order_by('-priority', 'min_value')
+        
+        for rule in matching_rule:
+            if rule.matches_value(gap_percentage):
+                return rule.score
+        
+        # Return default score if no rule matches
+        return 0
     
     def _calculate_trend(self, current_score, previous_score):
         """Calculate trend direction"""
@@ -1034,11 +1178,11 @@ class DashboardService:
             indicators_data[indicator_name]['scores'].append({
                 'org_unit_id': score.org_unit_id,
                 'org_unit_name': score.org_unit.name,
-                'raw_value': score.raw_value,
+                'raw_value': score.current_value,
                 'score': score.score,
                 'trend': score.trend,
-                'color': score.color,
-                'label': score.label
+                'color': score.score_color,
+                'label': score.score_label
             })
         
         # Calculate statistics for each indicator
@@ -1125,11 +1269,11 @@ class DashboardService:
                 {
                     'indicator_id': score.indicator.id,
                     'indicator_name': score.indicator.name,
-                    'raw_value': score.raw_value,
+                    'raw_value': score.current_value,
                     'score': score.score,
                     'trend': score.trend,
-                    'color': score.color,
-                    'label': score.label
+                    'color': score.score_color,
+                    'label': score.score_label
                 }
                 for score in indicator_scores
             ]

@@ -713,6 +713,33 @@ class DHIS2Client:
         
         try:
             logger.debug(f"Making {method} request to: {url}")
+            
+            # Handle multiple dimension parameters correctly
+            if 'params' in kwargs and 'dimension' in kwargs['params']:
+                dimension_values = kwargs['params']['dimension']
+                if isinstance(dimension_values, list):
+                    # Convert list of dimensions to separate dimension parameters
+                    params = kwargs['params'].copy()
+                    del params['dimension']
+                    
+                    # Build URL manually with multiple dimension parameters
+                    import urllib.parse
+                    query_parts = []
+                    
+                    # Add dimension parameters
+                    for dim_value in dimension_values:
+                        query_parts.append(f"dimension={urllib.parse.quote(dim_value)}")
+                    
+                    # Add other parameters
+                    for key, value in params.items():
+                        query_parts.append(f"{key}={urllib.parse.quote(str(value))}")
+                    
+                    if query_parts:
+                        url += "?" + "&".join(query_parts)
+                    
+                    # Remove params from kwargs since we built the URL manually
+                    kwargs = {k: v for k, v in kwargs.items() if k != 'params'}
+            
             response = self.session.request(method, url, **kwargs)
             
             # Log request details for debugging
@@ -730,6 +757,9 @@ class DHIS2Client:
             elif response.status_code == 404:
                 logger.error(f"Endpoint not found: {method} {url}")
                 raise requests.RequestException(f"Endpoint not found: {response.text}")
+            elif response.status_code == 409:
+                logger.error(f"Conflict error for {method} {url}: {response.text}")
+                raise requests.RequestException(f"Conflict error (invalid parameters): {response.text}")
             elif response.status_code >= 500:
                 logger.error(f"Server error for {method} {url}: {response.text}")
                 raise requests.RequestException(f"Server error: {response.text}")
@@ -743,7 +773,7 @@ class DHIS2Client:
                 logger.error(f"Failed to parse JSON response from {url}: {str(e)}")
                 logger.error(f"Response status code: {response.status_code}")
                 logger.error(f"Response headers: {dict(response.headers)}")
-                logger.error(f"Full response content: {response.text}")
+                logger.error(f"Response content (first 500 chars): {response.text[:500]}")
                 
                 # Check if response is HTML (login page)
                 if response.text.strip().startswith('<!DOCTYPE html>') or '<html' in response.text.lower():
@@ -757,26 +787,25 @@ class DHIS2Client:
             if hasattr(e, 'response') and e.response:
                 logger.error(f"Response status: {e.response.status_code}")
                 logger.error(f"Response headers: {dict(e.response.headers)}")
-                logger.error(f"Full response content: {e.response.text}")
+                logger.error(f"Response content (first 500 chars): {e.response.text[:500]}")
             raise
 
     def get_analytics_data(self, data_elements: List[str] = None, indicators: List[str] = None, 
-                          periods: List[str] = None, org_units: List[str] = None,
-                          data_sets: List[str] = None, program_indicators: List[str] = None,
-                          skip_data: bool = False, skip_meta: bool = False,
-                          skip_rounding: bool = False, show_hierarchy: bool = True,
-                          include_num_den: bool = True, output_type: str = "EVENT") -> Dict[str, Any]:
+                      periods: List[str] = None, org_units: List[str] = None,
+                      data_sets: List[str] = None, program_indicators: List[str] = None,
+                      skip_data: bool = False, skip_meta: bool = False,
+                      skip_rounding: bool = False, show_hierarchy: bool = True,
+                      include_num_den: bool = True, output_type: str = "EVENT") -> Dict[str, Any]:
         """
         Get analytics data from DHIS2 using the /api/analytics endpoint
-        This supports data elements, indicators, program indicators, and data sets
+        FIXED: Using correct DHIS2 analytics API format with dimension parameters
         
         Args:
             data_elements: List of data element UIDs
             indicators: List of indicator UIDs
             periods: List of period identifiers (fixed or relative)
-            org_units: List of org unit UIDs (optional)
-            data_sets: List of data set UIDs (optional)
-            program_indicators: List of program indicator UIDs (optional)
+            org_units: List of org unit UIDs
+            program_indicators: List of program indicator UIDs
             skip_data: Skip data rows in response
             skip_meta: Skip metadata in response
             skip_rounding: Skip rounding of values
@@ -790,35 +819,48 @@ class DHIS2Client:
         try:
             endpoint = "api/analytics"
             
-            # Build parameters according to DHIS2 Analytics API specification
+            # FIXED: Build parameters according to DHIS2 Analytics API specification
             params = {}
             
-            # Data dimension (dx) - combine all data types
+            # Build dx dimension (data dimension) correctly
+            # According to DHIS2 docs, all data items go into the dx dimension
             dx_items = []
+            
             if data_elements:
                 dx_items.extend(data_elements)
+            
             if indicators:
                 dx_items.extend(indicators)
-            if data_sets:
-                dx_items.extend(data_sets)
+            
             if program_indicators:
                 dx_items.extend(program_indicators)
             
-            # Build dimensions list - each dimension should be a separate parameter
-            dimensions = []
-            
+            # FIXED: Use dimension parameter format as per DHIS2 API docs
             if dx_items:
-                dimensions.append(f"dx:{';'.join(dx_items)}")
+                params['dimension'] = params.get('dimension', [])
+                if isinstance(params['dimension'], str):
+                    params['dimension'] = [params['dimension']]
+                elif not isinstance(params['dimension'], list):
+                    params['dimension'] = []
+                params['dimension'].append(f"dx:{';'.join(dx_items)}")
             
+            # Add period dimension
             if periods:
-                dimensions.append(f"pe:{';'.join(periods)}")
+                params['dimension'] = params.get('dimension', [])
+                if isinstance(params['dimension'], str):
+                    params['dimension'] = [params['dimension']]
+                elif not isinstance(params['dimension'], list):
+                    params['dimension'] = []
+                params['dimension'].append(f"pe:{';'.join(periods)}")
             
+            # Add org unit dimension
             if org_units:
-                dimensions.append(f"ou:{';'.join(org_units)}")
-            
-            # Set dimensions as a list (requests will handle multiple parameters with same name)
-            if dimensions:
-                params["dimension"] = dimensions
+                params['dimension'] = params.get('dimension', [])
+                if isinstance(params['dimension'], str):
+                    params['dimension'] = [params['dimension']]
+                elif not isinstance(params['dimension'], list):
+                    params['dimension'] = []
+                params['dimension'].append(f"ou:{';'.join(org_units)}")
             
             # Additional parameters
             if skip_data:
@@ -834,11 +876,13 @@ class DHIS2Client:
             if output_type != "EVENT":
                 params["outputType"] = output_type
             
+            # Add displayProperty parameter for better response format
+            params["displayProperty"] = "NAME"
+            
             logger.info(f"Making DHIS2 analytics request to {endpoint}")
             logger.info(f"Request parameters: {params}")
             logger.info(f"Data elements: {data_elements}")
             logger.info(f"Indicators: {indicators}")
-            logger.info(f"Data sets: {data_sets}")
             logger.info(f"Program indicators: {program_indicators}")
             logger.info(f"Periods: {periods}")
             logger.info(f"Org units: {org_units}")
@@ -852,6 +896,8 @@ class DHIS2Client:
                     logger.info(f"Number of rows in response: {len(data['rows'])}")
                 if 'headers' in data:
                     logger.info(f"Number of headers in response: {len(data['headers'])}")
+                    header_names = [h.get('name', 'Unknown') for h in data['headers']]
+                    logger.info(f"Header names: {header_names}")
             else:
                 logger.warning(f"Unexpected response type: {type(data)}")
             
@@ -859,6 +905,51 @@ class DHIS2Client:
             
         except requests.RequestException as e:
             logger.error(f"Error getting analytics data: {str(e)}")
+            raise
+
+    # FIXED: Add new method for data set reports
+    def get_data_set_report(self, data_set_id: str, periods: List[str] = None, 
+                       org_units: List[str] = None, **kwargs) -> Dict[str, Any]:
+        """
+        Get data set report from DHIS2 using the /api/dataSetReport endpoint
+        This is used for data sets that cannot be queried via analytics endpoint
+        
+        Args:
+            data_set_id: DHIS2 UID of the data set
+            periods: List of period identifiers
+            org_units: List of org unit UIDs
+            **kwargs: Additional parameters
+            
+        Returns:
+            Data set report dictionary
+        """
+        try:
+            endpoint = "api/dataSetReport"
+            
+            params = {
+                "ds": data_set_id
+            }
+            
+            if periods:
+                params["pe"] = ";".join(periods)
+            
+            if org_units:
+                params["ou"] = ";".join(org_units)
+            
+            # Add additional parameters
+            for key, value in kwargs.items():
+                params[key] = value
+            
+            logger.info(f"Making DHIS2 data set report request to {endpoint}")
+            logger.info(f"Request parameters: {params}")
+            
+            data = self._make_request("GET", endpoint, params=params)
+            
+            logger.info(f"DHIS2 data set report response received")
+            return data
+            
+        except requests.RequestException as e:
+            logger.error(f"Error getting data set report: {str(e)}")
             raise
 
     def get_analytics_data_enhanced(self, data_items: List[Dict[str, str]], periods: List[str], 
