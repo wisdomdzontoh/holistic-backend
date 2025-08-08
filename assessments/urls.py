@@ -8,6 +8,7 @@ router.register(r'indicator-data', views.IndicatorDataViewSet)
 router.register(r'indicator-scores', views.IndicatorScoreViewSet)
 router.register(r'objective-scores', views.ObjectiveScoreViewSet)
 router.register(r'sector-scores', views.SectorScoreViewSet)
+router.register(r'holistic-assessment', views.HolisticAssessmentViewSet, basename='holistic-assessment')
 
 urlpatterns = [
     path('', include(router.urls)),

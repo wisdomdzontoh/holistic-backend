@@ -7,6 +7,7 @@ from django_filters.rest_framework import DjangoFilterBackend
 from django.db import transaction
 from django.utils import timezone
 import logging
+from rest_framework.exceptions import ValidationError
 
 from .models import (
     DataSyncLog, IndicatorData, IndicatorScore, ObjectiveScore, SectorScore
@@ -20,9 +21,10 @@ from .serializers import (
     BulkScoreCalculationSerializer, DataSyncRequestSerializer,
     ScoreOverrideSerializer, DashboardSummarySerializer,
     ObjectiveDashboardSerializer, IndicatorDashboardSerializer,
-    AssessmentReportSerializer
+    AssessmentReportSerializer, HolisticAssessmentRequestSerializer,
+    HolisticAssessmentSaveSerializer
 )
-from .services import DataSyncService, ScoreCalculationService, DashboardService
+from .services import DataSyncService, ScoreCalculationService, DashboardService, RealTimeDHIS2Service, AssessmentSaveService
 from dhis2_auth.session import get_dhis2_user, get_dhis2_user_from_request, get_dhis2_session_data
 from dhis2_auth.dhis_client import DHIS2ClientFactory
 
@@ -1358,3 +1360,122 @@ class AssessmentManagementViewSet(viewsets.ViewSet):
                 {"success": False, "error": f"Failed to test DHIS2 connection: {str(e)}"},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
+
+
+class HolisticAssessmentViewSet(viewsets.ViewSet):
+    """
+    ViewSet for real-time holistic assessment data
+    """
+    permission_classes = [IsAuthenticated]
+    
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.realtime_service = RealTimeDHIS2Service()
+        self.save_service = AssessmentSaveService()
+    
+    @action(detail=False, methods=['post'])
+    def fetch_data(self, request):
+        """
+        Fetch real-time DHIS2 data for holistic assessment
+        No database storage - just fetch and return for immediate display
+        """
+        try:
+            # Validate request data
+            serializer = HolisticAssessmentRequestSerializer(data=request.data)
+            serializer.is_valid(raise_exception=True)
+            
+            assessment_config = serializer.validated_data
+            
+            # Fetch real-time data
+            assessment_data = self.realtime_service.fetch_holistic_assessment_data(
+                request, assessment_config
+            )
+            
+            return Response(assessment_data)
+            
+        except ValidationError as e:
+            return Response({
+                'status': 'error',
+                'message': str(e)
+            }, status=400)
+        except Exception as e:
+            logger.error(f"Error fetching holistic assessment data: {str(e)}")
+            return Response({
+                'status': 'error',
+                'message': 'Failed to fetch assessment data'
+            }, status=500)
+    
+    @action(detail=False, methods=['post'])
+    def save_assessment(self, request):
+        """
+        Save a user-generated holistic assessment
+        """
+        try:
+            # Validate request data
+            serializer = HolisticAssessmentSaveSerializer(data=request.data)
+            serializer.is_valid(raise_exception=True)
+            
+            assessment_data = serializer.validated_data
+            
+            # Save assessment
+            saved_assessment = self.save_service.save_assessment(request, assessment_data)
+            
+            return Response({
+                'status': 'success',
+                'message': 'Assessment saved successfully',
+                'assessment_id': saved_assessment.get('id')
+            })
+            
+        except Exception as e:
+            logger.error(f"Error saving assessment: {str(e)}")
+            return Response({
+                'status': 'error',
+                'message': 'Failed to save assessment'
+            }, status=500)
+    
+    @action(detail=False, methods=['get'])
+    def get_saved_assessments(self, request):
+        """
+        Get saved assessments for the current user
+        """
+        try:
+            org_unit_id = request.query_params.get('org_unit_id')
+            assessments = self.save_service.get_user_assessments(request, org_unit_id)
+            
+            return Response({
+                'status': 'success',
+                'assessments': assessments
+            })
+            
+        except Exception as e:
+            logger.error(f"Error retrieving saved assessments: {str(e)}")
+            return Response({
+                'status': 'error',
+                'message': 'Failed to retrieve assessments'
+            }, status=500)
+    
+    @action(detail=True, methods=['get'])
+    def get_assessment(self, request, pk=None):
+        """
+        Get a specific saved assessment
+        """
+        try:
+            assessment = self.save_service.get_assessment_by_id(request, pk)
+            
+            if not assessment:
+                return Response({
+                    'status': 'error',
+                    'message': 'Assessment not found'
+                }, status=404)
+            
+            return Response({
+                'status': 'success',
+                'assessment': assessment
+            })
+            
+        except Exception as e:
+            logger.error(f"Error retrieving assessment {pk}: {str(e)}")
+            return Response({
+                'status': 'error',
+                'message': 'Failed to retrieve assessment'
+            }, status=500)

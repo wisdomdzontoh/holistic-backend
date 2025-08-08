@@ -821,6 +821,7 @@ class DHIS2Client:
             
             # FIXED: Build parameters according to DHIS2 Analytics API specification
             params = {}
+            dimensions = []
             
             # Build dx dimension (data dimension) correctly
             # According to DHIS2 docs, all data items go into the dx dimension
@@ -835,32 +836,21 @@ class DHIS2Client:
             if program_indicators:
                 dx_items.extend(program_indicators)
             
-            # FIXED: Use dimension parameter format as per DHIS2 API docs
+            # FIXED: Only add dx dimension if we have actual data items
             if dx_items:
-                params['dimension'] = params.get('dimension', [])
-                if isinstance(params['dimension'], str):
-                    params['dimension'] = [params['dimension']]
-                elif not isinstance(params['dimension'], list):
-                    params['dimension'] = []
-                params['dimension'].append(f"dx:{';'.join(dx_items)}")
+                dimensions.append(f"dx:{';'.join(dx_items)}")
             
             # Add period dimension
             if periods:
-                params['dimension'] = params.get('dimension', [])
-                if isinstance(params['dimension'], str):
-                    params['dimension'] = [params['dimension']]
-                elif not isinstance(params['dimension'], list):
-                    params['dimension'] = []
-                params['dimension'].append(f"pe:{';'.join(periods)}")
+                dimensions.append(f"pe:{';'.join(periods)}")
             
             # Add org unit dimension
             if org_units:
-                params['dimension'] = params.get('dimension', [])
-                if isinstance(params['dimension'], str):
-                    params['dimension'] = [params['dimension']]
-                elif not isinstance(params['dimension'], list):
-                    params['dimension'] = []
-                params['dimension'].append(f"ou:{';'.join(org_units)}")
+                dimensions.append(f"ou:{';'.join(org_units)}")
+            
+            # FIXED: Only add dimension parameter if we have dimensions
+            if dimensions:
+                params["dimension"] = dimensions
             
             # Additional parameters
             if skip_data:
@@ -886,6 +876,7 @@ class DHIS2Client:
             logger.info(f"Program indicators: {program_indicators}")
             logger.info(f"Periods: {periods}")
             logger.info(f"Org units: {org_units}")
+            logger.info(f"Dimensions: {dimensions}")
             
             data = self._make_request("GET", endpoint, params=params)
             

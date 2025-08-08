@@ -374,3 +374,90 @@ class AssessmentReportSerializer(serializers.Serializer):
     indicators = IndicatorDashboardSerializer(many=True)
     generated_at = serializers.DateTimeField()
     generated_by = serializers.CharField(max_length=255) 
+
+
+class HolisticAssessmentRequestSerializer(serializers.Serializer):
+    """
+    Serializer for holistic assessment data fetch requests
+    """
+    org_unit_ids = serializers.ListField(
+        child=serializers.CharField(max_length=255),
+        required=True,
+        help_text="List of organization unit IDs"
+    )
+    periods = serializers.ListField(
+        required=True,
+        help_text="List of periods (e.g., ['2021', '2022', '2023'])"
+    )
+    
+    def validate_periods(self, value):
+        """Validate and normalize periods"""
+        normalized_periods = []
+        for period in value:
+            if isinstance(period, dict):
+                # Extract period code from object format
+                if 'code' in period:
+                    normalized_periods.append(str(period['code']))
+                elif 'name' in period:
+                    normalized_periods.append(str(period['name']))
+                else:
+                    raise serializers.ValidationError(f"Period object must contain 'code' or 'name': {period}")
+            else:
+                # Already a string
+                normalized_periods.append(str(period))
+        return normalized_periods
+    indicator_uids = serializers.ListField(
+        child=serializers.CharField(max_length=255),
+        required=False,
+        help_text="List of indicator UIDs to fetch (optional - uses all active if not provided)"
+    )
+    include_calculations = serializers.BooleanField(
+        default=True,
+        help_text="Whether to include score calculations"
+    )
+    include_targets = serializers.BooleanField(
+        default=True,
+        help_text="Whether to include target values"
+    )
+
+class HolisticAssessmentSaveSerializer(serializers.Serializer):
+    """
+    Serializer for saving holistic assessments
+    """
+    name = serializers.CharField(
+        max_length=255,
+        required=True,
+        help_text="Name of the assessment"
+    )
+    org_unit_id = serializers.CharField(
+        max_length=255,
+        required=True,
+        help_text="Organization unit ID"
+    )
+    org_unit_name = serializers.CharField(
+        max_length=255,
+        required=True,
+        help_text="Organization unit name"
+    )
+    periods = serializers.ListField(
+        child=serializers.CharField(max_length=20),
+        required=True,
+        help_text="List of periods used in the assessment"
+    )
+    indicator_data = serializers.DictField(
+        required=True,
+        help_text="Indicator data with values for each period"
+    )
+    calculated_scores = serializers.DictField(
+        required=False,
+        help_text="Calculated scores and grades"
+    )
+    user_notes = serializers.CharField(
+        required=False,
+        allow_blank=True,
+        help_text="User notes and comments"
+    )
+    metadata = serializers.DictField(
+        required=False,
+        help_text="Additional metadata about the assessment"
+    ) 
