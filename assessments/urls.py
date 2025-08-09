@@ -18,6 +18,7 @@ urlpatterns = [
         path('save_assessment/', views.HolisticAssessmentViewSet.as_view({'post': 'save_assessment'}), name='holistic-save-assessment'),
         path('get_saved_assessments/', views.HolisticAssessmentViewSet.as_view({'get': 'get_saved_assessments'}), name='holistic-get-saved-assessments'),
         path('get_assessment/<str:pk>/', views.HolisticAssessmentViewSet.as_view({'get': 'get_assessment'}), name='holistic-get-assessment'),
+        path('update_assessment/<str:pk>/', views.HolisticAssessmentViewSet.as_view({'put': 'update_assessment'}), name='holistic-update-assessment'),
         path('delete_assessment/<str:pk>/', views.HolisticAssessmentViewSet.as_view({'delete': 'delete_assessment'}), name='holistic-delete-assessment'),
     ])),
     

@@ -1514,6 +1514,45 @@ class HolisticAssessmentViewSet(viewsets.ViewSet):
                 'message': 'Failed to retrieve assessment'
             }, status=500)
 
+    @action(detail=True, methods=['put'])
+    def update_assessment(self, request, pk=None):
+        """
+        Update a specific saved assessment
+        """
+        try:
+            # Validate request data
+            serializer = HolisticAssessmentSaveSerializer(data=request.data)
+            serializer.is_valid(raise_exception=True)
+            
+            assessment_data = serializer.validated_data
+            
+            # Update assessment
+            updated_assessment = self.save_service.update_assessment(request, pk, assessment_data)
+            
+            if not updated_assessment:
+                return Response({
+                    'status': 'error',
+                    'message': 'Assessment not found or you are not authorized to update it'
+                }, status=404)
+            
+            return Response({
+                'status': 'success',
+                'message': 'Assessment updated successfully',
+                'assessment': updated_assessment
+            })
+            
+        except ValidationError as e:
+            return Response({
+                'status': 'error',
+                'message': str(e)
+            }, status=400)
+        except Exception as e:
+            logger.error(f"Error updating assessment {pk}: {str(e)}")
+            return Response({
+                'status': 'error',
+                'message': 'Failed to update assessment'
+            }, status=500)
+
     @action(detail=True, methods=['delete'])
     def delete_assessment(self, request, pk=None):
         """

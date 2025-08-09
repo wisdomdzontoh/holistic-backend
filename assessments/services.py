@@ -1536,6 +1536,81 @@ class AssessmentSaveService:
             logger.error(f"Error retrieving assessment by ID: {str(e)}")
             return None
 
+    def update_assessment(self, request, assessment_id: str, assessment_data):
+        """
+        Update an existing saved assessment. Only the owner can update.
+        Returns the updated assessment data or None if not found/unauthorized.
+        """
+        try:
+            from .models import SavedAssessment
+            from dhis2_auth.models import DHIS2User
+
+            # Get the current user
+            current_user = None
+            if hasattr(request, 'user') and request.user.is_authenticated:
+                try:
+                    current_user = DHIS2User.objects.get(id=request.user.id)
+                except DHIS2User.DoesNotExist:
+                    current_user = None
+
+            # Find the assessment and verify ownership
+            queryset = SavedAssessment.objects.filter(id=assessment_id)
+            if current_user:
+                queryset = queryset.filter(created_by=current_user)
+
+            assessment = queryset.first()
+            if not assessment:
+                logger.warning(f"Assessment {assessment_id} not found or user not authorized")
+                return None
+
+            # Update the assessment fields
+            with transaction.atomic():
+                # Update basic fields
+                if 'name' in assessment_data:
+                    assessment.name = assessment_data['name']
+                if 'org_unit_id' in assessment_data:
+                    assessment.org_unit_id = assessment_data['org_unit_id']
+                if 'org_unit_name' in assessment_data:
+                    assessment.org_unit_name = assessment_data['org_unit_name']
+                if 'periods' in assessment_data:
+                    assessment.periods = assessment_data['periods']
+                if 'user_notes' in assessment_data:
+                    assessment.user_notes = assessment_data['user_notes']
+                
+                # Update data fields
+                if 'indicator_data' in assessment_data:
+                    assessment.indicator_data = assessment_data['indicator_data']
+                if 'calculated_scores' in assessment_data:
+                    assessment.calculated_scores = assessment_data['calculated_scores']
+                if 'metadata' in assessment_data:
+                    assessment.metadata = assessment_data['metadata']
+
+                # Save the updated assessment
+                assessment.save()
+
+                logger.info(f"Assessment updated: {assessment.name} (ID: {assessment.id})")
+                
+                return {
+                    'id': assessment.id,
+                    'name': assessment.name,
+                    'org_unit_id': assessment.org_unit_id,
+                    'org_unit_name': assessment.org_unit_name,
+                    'periods': assessment.periods,
+                    'user_notes': assessment.user_notes,
+                    'indicator_data': assessment.indicator_data,
+                    'calculated_scores': assessment.calculated_scores,
+                    'metadata': assessment.metadata,
+                    'created_at': assessment.created_at.isoformat(),
+                    'updated_at': assessment.updated_at.isoformat(),
+                    'total_indicators': assessment.total_indicators,
+                    'total_objectives': assessment.total_objectives,
+                    'assessment_type': assessment.assessment_type
+                }
+
+        except Exception as e:
+            logger.error(f"Error updating assessment {assessment_id}: {str(e)}")
+            return None
+
     def delete_assessment(self, request, assessment_id: str) -> bool:
         """
         Delete a saved assessment owned by the current user (if available).
