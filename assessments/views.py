@@ -678,6 +678,16 @@ class AssessmentManagementViewSet(viewsets.ViewSet):
                     
                     objective_data['indicators'].append(indicator_data)
                 
+                # Compute objective-level O/P categories and trend score from indicators
+                try:
+                    trend_meta = self.realtime_service._compute_objective_trend_from_indicators(objective_data['indicators'])
+                    if trend_meta:
+                        if objective_data.get('score') is None:
+                            objective_data['score'] = {}
+                        objective_data['score'].update(trend_meta)
+                except Exception as ex:
+                    logger.warning(f"Objective trend compute failed: {ex}")
+
                 assessment_data['objectives'].append(objective_data)
             
             return Response(assessment_data)
@@ -1406,6 +1416,31 @@ class HolisticAssessmentViewSet(viewsets.ViewSet):
             }, status=500)
     
     @action(detail=False, methods=['post'])
+    def export_excel(self, request):
+        """Generate and return a path/URL for a formatted Excel export that mirrors the UI."""
+        try:
+            # Reuse the fetch logic to get payload (no DB write)
+            serializer = HolisticAssessmentRequestSerializer(data=request.data)
+            serializer.is_valid(raise_exception=True)
+            payload = self.realtime_service.fetch_holistic_assessment_data(request, serializer.validated_data)
+            file_path = self.realtime_service.generate_holistic_excel(payload)
+            from django.conf import settings
+            media_url = getattr(settings, 'MEDIA_URL', '/media/')
+            # Build absolute URL so the frontend can open the file directly
+            rel_path = file_path.split('media')[-1].lstrip('\\/')
+            absolute_url = request.build_absolute_uri(f"{media_url}{rel_path.replace('\\', '/')}")
+            return Response({
+                'status': 'success',
+                'file_path': file_path,
+                'file_url': absolute_url
+            })
+        except ValidationError as e:
+            return Response({'status': 'error', 'message': str(e)}, status=400)
+        except Exception as e:
+            logger.error(f"Error exporting holistic excel: {e}")
+            return Response({'status': 'error', 'message': 'Failed to export Excel'}, status=500)
+
+    @action(detail=False, methods=['post'])
     def save_assessment(self, request):
         """
         Save a user-generated holistic assessment
@@ -1440,12 +1475,11 @@ class HolisticAssessmentViewSet(viewsets.ViewSet):
         """
         try:
             org_unit_id = request.query_params.get('org_unit_id')
-            assessments = self.save_service.get_user_assessments(request, org_unit_id)
-            
-            return Response({
-                'status': 'success',
-                'assessments': assessments
-            })
+            payload = self.save_service.get_user_assessments(request, org_unit_id)
+            if isinstance(payload, dict) and 'results' in payload:
+                return Response({ 'status': 'success', **payload })
+            # Backward compatibility if service returns list
+            return Response({ 'status': 'success', 'results': payload, 'count': len(payload), 'page': 1, 'size': len(payload) })
             
         except Exception as e:
             logger.error(f"Error retrieving saved assessments: {str(e)}")

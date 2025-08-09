@@ -8,6 +8,9 @@ from datetime import datetime, date, timedelta
 from typing import List, Dict, Optional, Any
 from django.db import transaction
 from django.utils import timezone
+from django.conf import settings
+import os
+from datetime import datetime
 from django.core.exceptions import ValidationError
 from django.db.models import Q, Avg, Count, Sum
 from django.contrib.auth import get_user_model
@@ -36,6 +39,402 @@ class RealTimeDHIS2Service:
     
     def __init__(self, dhis2_client=None):
         self.client = dhis2_client
+    
+    def _classify_change_category(self, change_pct: float | None) -> str | None:
+        """Map relative percent change to O category per scoring context."""
+        if change_pct is None:
+            return None
+        if change_pct > 5:
+            return '>5%'
+        if -5 < change_pct <= 5:
+            return '5%<=C>-5%'
+        if -10 < change_pct <= -5:
+            return '-10%<C<=-5%'
+        return '<=-10%'
+
+    def _classify_gap_category(self, gap_pct: float | None) -> str | None:
+        """Map absolute deviation to P category per scoring context (|gap| thresholds)."""
+        if gap_pct is None:
+            return None
+        abs_gap = abs(gap_pct)
+        if abs_gap <= 10:
+            return '<=10%'
+        if 10 < abs_gap <= 40:
+            return '10%<PT<=40%'
+        return '>40%'
+
+    def _compute_trend_score(self, has_data: bool, current_meets: bool | None, previous_meets: bool | None,
+                              change_cat: str | None, gap_cat: str | None) -> int:
+        """Replicate the nested rules (–2..+2) using L/M/N, O, P from scoring-context.md."""
+        if not has_data:
+            return -2
+        # Default guards
+        M = bool(current_meets)
+        N = bool(previous_meets)
+        O = change_cat
+        P = gap_cat
+        if M and N:
+            return 1
+        if M and not N:
+            return 0
+        # M == False
+        if N:
+            if O in ('>5%', '5%<=C>-5%'):
+                return 2
+            if O == '-10%<C<=-5%':
+                return 1
+            return 0
+        # M == False and N == False
+        if O == '>5%':
+            return 1
+        if O == '5%<=C>-5%':
+            if P == '<=10%':
+                return 1
+            if P == '10%<PT<=40%':
+                return 0
+            return -1
+        # Decline cases
+        return -1
+
+    def _median(self, numbers: list[float]) -> float | None:
+        vals = [float(x) for x in numbers if x is not None and isinstance(x, (int, float))]
+        if not vals:
+            return None
+        vals.sort()
+        n = len(vals)
+        mid = n // 2
+        if n % 2 == 0:
+            return (vals[mid-1] + vals[mid]) / 2
+        return vals[mid]
+
+    def _compute_objective_trend_from_indicators(self, indicators: list[dict]) -> dict:
+        """Aggregate indicator percent_change/target_gap and compute O/P categories and trend for objective."""
+        if not indicators:
+            return {}
+        changes = []
+        gaps = []
+        current_meets_flags = []
+        previous_meets_flags = []
+        for ind in indicators:
+            sc = ind.get('score') or {}
+            if sc.get('percent_change') is not None:
+                changes.append(float(sc.get('percent_change')))
+            if sc.get('target_gap') is not None:
+                gaps.append(abs(float(sc.get('target_gap'))))
+            # Determine meets based on target
+            curr = sc.get('current_value')
+            prev = sc.get('previous_value')
+            tgt = ind.get('target_value')
+            ttype = (ind.get('target_type') or 'increase').lower()
+            try:
+                if curr is not None and tgt is not None:
+                    current_meets_flags.append(float(curr) >= float(tgt) if ttype == 'increase' else float(curr) <= float(tgt))
+                if prev is not None and tgt is not None:
+                    previous_meets_flags.append(float(prev) >= float(tgt) if ttype == 'increase' else float(prev) <= float(tgt))
+            except Exception:
+                pass
+        med_change = self._median(changes)
+        med_gap = self._median(gaps)
+        change_cat = self._classify_change_category(med_change)
+        gap_cat = self._classify_gap_category(med_gap)
+        # Majority rule for meets
+        current_meets = (sum(1 for f in current_meets_flags if f) > len(current_meets_flags)/2) if current_meets_flags else None
+        previous_meets = (sum(1 for f in previous_meets_flags if f) > len(previous_meets_flags)/2) if previous_meets_flags else None
+        trend_score = self._compute_trend_score(has_data=med_change is not None or med_gap is not None,
+                                                current_meets=current_meets,
+                                                previous_meets=previous_meets,
+                                                change_cat=change_cat,
+                                                gap_cat=gap_cat)
+        return {
+            'percent_change': med_change,
+            'target_gap': med_gap,
+            'change_category': change_cat,
+            'gap_category': gap_cat,
+            'trend_score': trend_score,
+        }
+
+    def _score_color_label(self, score: int | None) -> tuple[str, str]:
+        if score is None:
+            return ('#6c757d', 'N/A')
+        if score >= 2:
+            return ('#28a745', 'Highly Performing')
+        if score == 1:
+            return ('#28a745', 'Moderately Performing')
+        if score == 0:
+            return ('#ffc107', 'Sustained')
+        if score == -1:
+            return ('#fd7e14', 'Underperforming')
+        return ('#dc3545', 'Severely Underperforming')
+
+    def generate_holistic_excel(self, assessment_payload: list) -> str:
+        """Generate an Excel file that mirrors the table format with color coding.
+        Returns the absolute file path of the saved workbook.
+        """
+        try:
+            from openpyxl import Workbook
+            from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
+            from openpyxl.utils import get_column_letter
+            from openpyxl.formatting.rule import FormulaRule
+        except Exception as e:
+            logger.error(f"openpyxl not available: {e}")
+            raise
+
+        wb = Workbook()
+        ws = wb.active
+        ws.title = 'Table'
+
+        # Styling helpers
+        header_fill = PatternFill('solid', fgColor='265380')  # #265380
+        header_font = Font(color='FFFFFF', bold=True)
+        center = Alignment(horizontal='center', vertical='center')
+        left = Alignment(horizontal='left', vertical='center')
+        thin = Side(border_style='thin', color='CCCCCC')
+        border = Border(left=thin, right=thin, top=thin, bottom=thin)
+
+        orange_fill = PatternFill('solid', fgColor='FDBA74')  # approx #fd7e14 light
+        yellow_fill = PatternFill('solid', fgColor='FFF3BF')  # light yellow
+        green50 = PatternFill('solid', fgColor='E8F5E9')
+        yellow50 = PatternFill('solid', fgColor='FFFDE7')
+        red50 = PatternFill('solid', fgColor='FFEBEE')
+
+        def score_fill(score: float | None):
+            if score is None:
+                return None
+            # Map -2..+2 to red/orange/yellow/green
+            if score >= 1:
+                return PatternFill('solid', fgColor='28A745')
+            if score >= 0:
+                return PatternFill('solid', fgColor='FFC107')
+            if score >= -1:
+                return PatternFill('solid', fgColor='FD7E14')
+            return PatternFill('solid', fgColor='DC3545')
+
+        data = assessment_payload[0] if assessment_payload else None
+        if not data:
+            raise ValueError('Empty assessment data')
+
+        periods = []
+        # Derive periods by inspecting first objective/indicator
+        if data.get('objectives'):
+            for obj in data['objectives']:
+                if obj.get('indicators'):
+                    first = obj['indicators'][0]
+                    periods = list(first.get('data_values', {}).keys())
+                    break
+
+        # Header row
+        headers = ['#', 'Indicator'] + periods + ['Change', 'P-T Gap Analysis', 'Target', 'Assessed score (-2,-1,0,+1,+2)', 'Remarks']
+        ws.append(headers)
+        for idx, _ in enumerate(headers, start=1):
+            cell = ws.cell(row=1, column=idx)
+            cell.fill = header_fill
+            cell.font = header_font
+            cell.alignment = center
+            cell.border = border
+        ws.row_dimensions[1].height = 22
+
+        row = 2
+        for obj in data.get('objectives', []):
+            # Objective row
+            ws.append([None] * len(headers))
+            for c in range(1, len(headers) + 1):
+                cell = ws.cell(row=row, column=c)
+                cell.fill = orange_fill
+                cell.border = border
+            ws.cell(row=row, column=1, value=None)
+            ws.cell(row=row, column=2, value=obj.get('name')).alignment = left
+            row += 1
+
+            # Indicator rows
+            for ind in obj.get('indicators', []):
+                row_values = []
+                row_values.append(ind.get('indicator_number'))
+                row_values.append(ind.get('name'))
+                # periods
+                for p in periods:
+                    v = ind.get('data_values', {}).get(p, {}).get('value')
+                    row_values.append(v)
+                # change/gap
+                sc = ind.get('score') or {}
+                row_values.append(sc.get('percent_change'))
+                row_values.append(sc.get('target_gap'))
+                row_values.append(ind.get('target_value'))
+                row_values.append((sc.get('score') if sc.get('score') is not None else None))
+                row_values.append('')  # remarks
+                ws.append(row_values)
+
+                # style row
+                col = 1
+                for val in row_values:
+                    cell = ws.cell(row=row, column=col)
+                    cell.border = border
+                    if col == 1:
+                        cell.alignment = center
+                    elif col == 2:
+                        cell.alignment = left
+                    else:
+                        cell.alignment = center
+                    col += 1
+
+                # Change bg (col after periods)
+                change_col = 2 + len(periods) + 1
+                gap_col = change_col + 1
+                # set fills
+                change_val = sc.get('percent_change')
+                if isinstance(change_val, (int, float)):
+                    if change_val > 5:
+                        ws.cell(row=row, column=change_col).fill = green50
+                    elif change_val < -5:
+                        ws.cell(row=row, column=change_col).fill = red50
+                    else:
+                        ws.cell(row=row, column=change_col).fill = yellow50
+                gap_val = sc.get('target_gap')
+                if isinstance(gap_val, (int, float)):
+                    abs_gap = abs(gap_val)
+                    ws.cell(row=row, column=gap_col).fill = green50 if abs_gap <= 10 else (yellow50 if abs_gap <= 40 else red50)
+
+                # Score color
+                score_col = gap_col + 2
+                s = sc.get('score')
+                fill = score_fill(s)
+                if fill:
+                    ws.cell(row=row, column=score_col).fill = fill
+                    ws.cell(row=row, column=score_col).font = Font(color='FFFFFF', bold=True)
+
+                row += 1
+
+            # Milestone row
+            ws.append(['MS', obj.get('milestone', {}).get('name') if isinstance(obj.get('milestone'), dict) else obj.get('milestone')] + ['-'] * (len(headers) - 2))
+            for c in range(1, len(headers) + 1):
+                cell = ws.cell(row=row, column=c)
+                cell.fill = yellow_fill
+                cell.border = border
+                cell.alignment = center if c != 2 else left
+            row += 1
+
+        last_row = row - 1
+
+        # Conditional formatting rules
+        try:
+            # Change column: >5 green, between -5..5 yellow, < -5 red
+            ch_letter = get_column_letter(2 + len(periods) + 1)
+            ch_range = f"{ch_letter}2:{ch_letter}{last_row}"
+            ws.conditional_formatting.add(ch_range, FormulaRule(formula=[f"{ch_letter}2>5"], fill=green50))
+            ws.conditional_formatting.add(ch_range, FormulaRule(formula=[f"AND({ch_letter}2>=-5,{ch_letter}2<=5)"], fill=yellow50))
+            ws.conditional_formatting.add(ch_range, FormulaRule(formula=[f"{ch_letter}2<-5"], fill=red50))
+
+            # Gap column: ABS<=10 green, <=40 yellow, >40 red
+            gp_letter = get_column_letter(2 + len(periods) + 2)
+            gp_range = f"{gp_letter}2:{gp_letter}{last_row}"
+            ws.conditional_formatting.add(gp_range, FormulaRule(formula=[f"ABS({gp_letter}2)<=10"], fill=green50))
+            ws.conditional_formatting.add(gp_range, FormulaRule(formula=[f"AND(ABS({gp_letter}2)>10,ABS({gp_letter}2)<=40)"], fill=yellow50))
+            ws.conditional_formatting.add(gp_range, FormulaRule(formula=[f"ABS({gp_letter}2)>40"], fill=red50))
+
+            # Score column: >=1 green, 0..1 yellow, -1..0 orange, < -1 red
+            sc_letter = get_column_letter(2 + len(periods) + 4)
+            sc_range = f"{sc_letter}2:{sc_letter}{last_row}"
+            ws.conditional_formatting.add(sc_range, FormulaRule(formula=[f"{sc_letter}2>=1"], fill=PatternFill('solid', fgColor='28A745')))
+            ws.conditional_formatting.add(sc_range, FormulaRule(formula=[f"AND({sc_letter}2>=0,{sc_letter}2<1)"], fill=PatternFill('solid', fgColor='FFC107')))
+            ws.conditional_formatting.add(sc_range, FormulaRule(formula=[f"AND({sc_letter}2>=-1,{sc_letter}2<0)"], fill=PatternFill('solid', fgColor='FD7E14')))
+            ws.conditional_formatting.add(sc_range, FormulaRule(formula=[f"{sc_letter}2<-1"], fill=PatternFill('solid', fgColor='DC3545')))
+        except Exception as e:
+            logger.warning(f"Conditional formatting setup failed: {e}")
+
+        # Autosize basic columns
+        ws.column_dimensions['A'].width = 6
+        ws.column_dimensions['B'].width = 60
+        start_c = 3
+        for i in range(len(periods)):
+            ws.column_dimensions[chr(64 + start_c + i)].width = 12
+        # Change, Gap, Target, Score, Remarks
+        ws.column_dimensions[chr(64 + start_c + len(periods))].width = 12
+        ws.column_dimensions[chr(64 + start_c + len(periods) + 1)].width = 14
+        ws.column_dimensions[chr(64 + start_c + len(periods) + 2)].width = 12
+        ws.column_dimensions[chr(64 + start_c + len(periods) + 3)].width = 18
+        ws.column_dimensions[chr(64 + start_c + len(periods) + 4)].width = 20
+
+        # Summary sheet
+        try:
+            ws_sum = wb.create_sheet('Summary')
+            ws_sum.append(['Org Unit', data.get('org_unit_name', '')])
+            ws_sum.append(['Periods', ', '.join(periods)])
+            sec = data.get('sector_score') or {}
+            ws_sum.append(['Sector Score', sec.get('overall_score')])
+            ws_sum.append(['Sector Label', sec.get('score_label')])
+            ws_sum.append([])
+            ws_sum.append(['Objective', 'Final Score', 'Label'])
+            for obj in data.get('objectives', []):
+                sc = obj.get('score') or {}
+                ws_sum.append([obj.get('name'), sc.get('final_score'), sc.get('score_label')])
+        except Exception as e:
+            logger.warning(f"Failed to build Summary sheet: {e}")
+
+        # Raw Data sheet
+        try:
+            ws_raw = wb.create_sheet('Raw Data')
+            ws_raw.append(['Objective', 'Indicator', *periods, 'Target'])
+            for obj in data.get('objectives', []):
+                for ind in obj.get('indicators', []):
+                    row_vals = [obj.get('name'), ind.get('name')]
+                    for p in periods:
+                        row_vals.append(ind.get('data_values', {}).get(p, {}).get('value'))
+                    row_vals.append(ind.get('target_value'))
+                    ws_raw.append(row_vals)
+        except Exception as e:
+            logger.warning(f"Failed to build Raw Data sheet: {e}")
+
+        # Metadata sheet
+        try:
+            ws_meta = wb.create_sheet('Metadata')
+            ws_meta.append(['Key', 'Value'])
+            ws_meta.append(['Generated At', datetime.now().isoformat()])
+            ws_meta.append(['Org Unit ID', data.get('org_unit_id')])
+            ws_meta.append(['Org Unit Name', data.get('org_unit_name')])
+            ws_meta.append(['Period Range', f"{periods[0]} to {periods[-1]}" if periods else ''])
+        except Exception as e:
+            logger.warning(f"Failed to build Metadata sheet: {e}")
+
+        # Legend sheet
+        try:
+            ws_leg = wb.create_sheet('Legend')
+            ws_leg.append(['Legend'])
+            ws_leg.append(['Score Colors'])
+            legend_rows = [
+                ('Highly Performing (>= +1)', '28A745'),
+                ('Sustained (0 to < +1)', 'FFC107'),
+                ('Underperforming (-1 to < 0)', 'FD7E14'),
+                ('Severely Underperforming (< -1)', 'DC3545'),
+            ]
+            for text, color in legend_rows:
+                ws_leg.append([text])
+                cell = ws_leg.cell(row=ws_leg.max_row, column=2, value='')
+                cell.fill = PatternFill('solid', fgColor=color)
+            ws_leg.append([])
+            ws_leg.append(['Change Colors'])
+            ws_leg.append(['> +5% (Green)', ''])
+            ws_leg.cell(row=ws_leg.max_row, column=2).fill = green50
+            ws_leg.append(['-5% .. +5% (Yellow)', ''])
+            ws_leg.cell(row=ws_leg.max_row, column=2).fill = yellow50
+            ws_leg.append(['< -5% (Red)', ''])
+            ws_leg.cell(row=ws_leg.max_row, column=2).fill = red50
+            ws_leg.append([])
+            ws_leg.append(['P-T Gap Colors'])
+            ws_leg.append(['<= 10% (Green)', ''])
+            ws_leg.cell(row=ws_leg.max_row, column=2).fill = green50
+            ws_leg.append(['>10% and <=40% (Yellow)', ''])
+            ws_leg.cell(row=ws_leg.max_row, column=2).fill = yellow50
+            ws_leg.append(['> 40% (Red)', ''])
+            ws_leg.cell(row=ws_leg.max_row, column=2).fill = red50
+        except Exception as e:
+            logger.warning(f"Failed to build Legend sheet: {e}")
+
+        # Save file
+        export_dir = os.path.join(getattr(settings, 'MEDIA_ROOT', os.path.join(os.getcwd(), 'media')), 'exports')
+        os.makedirs(export_dir, exist_ok=True)
+        filename = f"holistic-assessment-{datetime.now().strftime('%Y%m%d-%H%M%S')}.xlsx"
+        file_path = os.path.join(export_dir, filename)
+        wb.save(file_path)
+        return file_path
         
     def fetch_holistic_assessment_data(self, request, assessment_config):
         """
@@ -126,7 +525,8 @@ class RealTimeDHIS2Service:
                             'target_value': float(indicator.target_value) if indicator.target_value else None,
                             'target_type': indicator.target_type,
                             'weight': 1.0,  # Default weight when no indicator weights configured
-                            'data_values': {}
+                            'data_values': {},
+                            'score': None
                         }
                         
                         # Fetch data for each period
@@ -149,6 +549,78 @@ class RealTimeDHIS2Service:
                                     'dhis2_value': None,
                                     'manual_override': None
                                 }
+                        # Compute percent_change and target_gap for latest vs previous period
+                        try:
+                            if isinstance(periods, list) and len(periods) >= 1:
+                                last_key = periods[-1]
+                                prev_key = periods[-2] if len(periods) > 1 else None
+                                curr_val = indicator_data['data_values'].get(last_key, {}).get('value')
+                                prev_val = indicator_data['data_values'].get(prev_key, {}).get('value') if prev_key else None
+                                change_pct = None
+                                if prev_val not in (None, 0, 0.0) and curr_val is not None:
+                                    try:
+                                        change = ((float(curr_val) - float(prev_val)) / abs(float(prev_val))) * 100.0
+                                        if change == float('inf') or change == float('-inf'):
+                                            change_pct = None
+                                        else:
+                                            change_pct = round(change, 1)
+                                    except Exception:
+                                        change_pct = None
+                                gap_pct = None
+                                tgt = indicator_data.get('target_value')
+                                if tgt not in (None, 0, 0.0) and curr_val is not None:
+                                    try:
+                                        ratio = float(curr_val) / float(tgt)
+                                        target_type = (indicator_data.get('target_type') or 'increase').lower()
+                                        gap_calc = (ratio - 1.0) * 100.0 if target_type == 'increase' else (1.0 - ratio) * 100.0
+                                        if gap_calc == float('inf') or gap_calc == float('-inf'):
+                                            gap_pct = None
+                                        else:
+                                            gap_pct = round(gap_calc, 1)
+                                    except Exception:
+                                        gap_pct = None
+                                # Derive categories and simple threshold flags for M/N
+                                change_cat = self._classify_change_category(change_pct)
+                                gap_cat = self._classify_gap_category(gap_pct)
+                                # For M/N we use meet-threshold as curr >= target for increase, curr <= target for decrease
+                                current_meets = None
+                                previous_meets = None
+                                try:
+                                    if curr_val is not None and tgt not in (None,):
+                                        if (indicator_data.get('target_type') or 'increase').lower() == 'increase':
+                                            current_meets = float(curr_val) >= float(tgt)
+                                        else:
+                                            current_meets = float(curr_val) <= float(tgt)
+                                except Exception:
+                                    current_meets = None
+                                try:
+                                    if prev_val is not None and tgt not in (None,):
+                                        if (indicator_data.get('target_type') or 'increase').lower() == 'increase':
+                                            previous_meets = float(prev_val) >= float(tgt)
+                                        else:
+                                            previous_meets = float(prev_val) <= float(tgt)
+                                except Exception:
+                                    previous_meets = None
+                                has_data = curr_val is not None
+                                trend_score = self._compute_trend_score(has_data, current_meets, previous_meets, change_cat, gap_cat)
+                                # Derive a simple indicator score from categories/trend if not provided by DB
+                                derived_score = trend_score
+                                color, label = self._score_color_label(derived_score)
+                                indicator_data['score'] = {
+                                    'percent_change': change_pct,
+                                    'target_gap': gap_pct,
+                                    'change_category': change_cat,
+                                    'gap_category': gap_cat,
+                                    'trend_score': trend_score,
+                                    'score': derived_score,
+                                    'score_color': color,
+                                    'score_label': label,
+                                    'current_value': curr_val,
+                                    'previous_value': prev_val,
+                                    'is_manual_override': False
+                                }
+                        except Exception as e:
+                            logger.warning(f"Failed computing change/gap for indicator {indicator.id}: {e}")
                         
                         objective_data['indicators'].append(indicator_data)
                     
@@ -186,7 +658,8 @@ class RealTimeDHIS2Service:
                             'target_value': float(indicator.target_value) if indicator.target_value else None,
                             'target_type': indicator.target_type,
                             'weight': float(indicator_weights_map.get(indicator.id, 1.0)),
-                            'data_values': {}
+                            'data_values': {},
+                            'score': None
                         }
                         
                         # Fetch data for each period
@@ -209,10 +682,93 @@ class RealTimeDHIS2Service:
                                     'dhis2_value': None,
                                     'manual_override': None
                                 }
+                        # Compute percent_change and target_gap for latest vs previous period
+                        try:
+                            if isinstance(periods, list) and len(periods) >= 1:
+                                last_key = periods[-1]
+                                prev_key = periods[-2] if len(periods) > 1 else None
+                                curr_val = indicator_data['data_values'].get(last_key, {}).get('value')
+                                prev_val = indicator_data['data_values'].get(prev_key, {}).get('value') if prev_key else None
+                                change_pct = None
+                                if prev_val not in (None, 0, 0.0) and curr_val is not None:
+                                    try:
+                                        change = ((float(curr_val) - float(prev_val)) / abs(float(prev_val))) * 100.0
+                                        if change == float('inf') or change == float('-inf'):
+                                            change_pct = None
+                                        else:
+                                            change_pct = round(change, 1)
+                                    except Exception:
+                                        change_pct = None
+                                gap_pct = None
+                                tgt = indicator_data.get('target_value')
+                                if tgt not in (None, 0, 0.0) and curr_val is not None:
+                                    try:
+                                        ratio = float(curr_val) / float(tgt)
+                                        target_type = (indicator_data.get('target_type') or 'increase').lower()
+                                        gap_calc = (ratio - 1.0) * 100.0 if target_type == 'increase' else (1.0 - ratio) * 100.0
+                                        if gap_calc == float('inf') or gap_calc == float('-inf'):
+                                            gap_pct = None
+                                        else:
+                                            gap_pct = round(gap_calc, 1)
+                                    except Exception:
+                                        gap_pct = None
+                                indicator_data['score'] = {
+                                    'percent_change': change_pct,
+                                    'target_gap': gap_pct,
+                                    'current_value': curr_val,
+                                    'previous_value': prev_val,
+                                    'is_manual_override': False
+                                }
+                        except Exception as e:
+                            logger.warning(f"Failed computing change/gap for indicator {indicator.id}: {e}")
                         
                         objective_data['indicators'].append(indicator_data)
                     
                     assessment_data['objectives'].append(objective_data)
+            
+            # Finalize objective and sector scoring for real-time payload
+            try:
+                objective_final_scores = []
+                for obj in assessment_data['objectives']:
+                    # Collect indicator scores with weights where available
+                    weighted_sum = 0.0
+                    total_weight = 0.0
+                    simple_scores = []
+                    for ind in obj.get('indicators', []):
+                        sc = (ind.get('score') or {}).get('score')
+                        wt = ind.get('weight', 1.0) or 1.0
+                        if isinstance(sc, (int, float)):
+                            simple_scores.append(float(sc))
+                            weighted_sum += float(sc) * float(wt)
+                            total_weight += float(wt)
+                    if total_weight > 0:
+                        final_score = weighted_sum / total_weight
+                    else:
+                        final_score = self._median(simple_scores) if simple_scores else None
+                    # Map to nearest integer for label/color mapping
+                    label_score = int(round(final_score)) if isinstance(final_score, (int, float)) else None
+                    color, label = self._score_color_label(label_score)
+                    if obj.get('score') is None:
+                        obj['score'] = {}
+                    obj['score'].update({
+                        'final_score': final_score,
+                        'score_color': color,
+                        'score_label': label,
+                    })
+                    if isinstance(final_score, (int, float)):
+                        objective_final_scores.append(final_score)
+                # Sector score as average of objective final scores
+                sector_final = self._median(objective_final_scores) if objective_final_scores else None
+                s_color, s_label = self._score_color_label(int(sector_final) if isinstance(sector_final, (int, float)) else None)
+                assessment_data['sector_score'] = {
+                    'overall_score': sector_final,
+                    'score_color': s_color,
+                    'score_label': s_label,
+                    'total_objectives': len(assessment_data['objectives']),
+                    'scored_objectives': len(objective_final_scores)
+                }
+            except Exception as e:
+                logger.warning(f"Finalize objective/sector scoring failed: {e}")
             
             # Add milestones
             milestones = Milestone.objects.filter(is_active=True)
@@ -825,50 +1381,91 @@ class AssessmentSaveService:
     
     def get_user_assessments(self, request, org_unit_id=None):
         """
-        Retrieve saved assessments for the current user
+        Retrieve saved assessments for the current user with pagination/search/sort.
+        Query params supported: page, size, search, ordering, owner ('mine'|'all').
         """
         try:
             from .models import SavedAssessment
-            
-            # Get the current user
+            from django.db.models import Q
+
+            # Params
+            params = request.query_params
+            page = int(params.get('page', 1)) if params.get('page') else 1
+            size = int(params.get('size', 10)) if params.get('size') else 10
+            search = params.get('search', '')
+            ordering = params.get('ordering', '-created_at')
+            owner = params.get('owner', 'mine')
+
+            # Current user
             from dhis2_auth.models import DHIS2User
             current_user = None
             if hasattr(request, 'user') and request.user.is_authenticated:
                 try:
                     current_user = DHIS2User.objects.get(id=request.user.id)
                 except DHIS2User.DoesNotExist:
-                    pass
-            
-            # Query saved assessments
+                    current_user = None
+
+            # Base queryset
             queryset = SavedAssessment.objects.all()
-            
-            # Filter by user if available
-            if current_user:
+
+            # Owner filter (default: mine)
+            if owner != 'all' and current_user:
                 queryset = queryset.filter(created_by=current_user)
-            
-            # Filter by org unit if specified
+
+            # Org unit filter
             if org_unit_id:
                 queryset = queryset.filter(org_unit_id=org_unit_id)
-            
-            # Return assessment summaries
-            assessments = []
-            for assessment in queryset.order_by('-created_at'):
-                assessments.append({
+
+            # Search by name or org_unit_name
+            if search:
+                queryset = queryset.filter(Q(name__icontains=search) | Q(org_unit_name__icontains=search))
+
+            # Ordering
+            allowed_ordering = {'name', 'created_at', '-name', '-created_at'}
+            if ordering not in allowed_ordering:
+                ordering = '-created_at'
+            queryset = queryset.order_by(ordering)
+
+            total = queryset.count()
+            # Pagination (simple slice)
+            start = (page - 1) * size
+            end = start + size
+            page_qs = queryset[start:end]
+
+            results = []
+            for assessment in page_qs:
+                results.append({
                     'id': assessment.id,
                     'name': assessment.name,
                     'org_unit_id': assessment.org_unit_id,
                     'org_unit_name': assessment.org_unit_name,
                     'created_at': assessment.created_at.isoformat(),
+                    'updated_at': assessment.updated_at.isoformat(),
+                    'last_opened': assessment.updated_at.isoformat(),
                     'total_indicators': assessment.total_indicators,
                     'total_objectives': assessment.total_objectives,
                     'assessment_type': assessment.assessment_type
                 })
-            
-            return assessments
-            
+
+            return {
+                'count': total,
+                'page': page,
+                'size': size,
+                'ordering': ordering,
+                'owner': owner if owner in ('mine','all') else 'mine',
+                'results': results,
+            }
+
         except Exception as e:
             logger.error(f"Error retrieving user assessments: {str(e)}")
-            return []
+            return {
+                'count': 0,
+                'page': 1,
+                'size': 10,
+                'ordering': '-created_at',
+                'owner': 'mine',
+                'results': [],
+            }
     
     def get_assessment_by_id(self, request, assessment_id):
         """
@@ -876,25 +1473,25 @@ class AssessmentSaveService:
         """
         try:
             from .models import SavedAssessment
-            
-            # Get the current user
             from dhis2_auth.models import DHIS2User
+
+            # Get the current user
             current_user = None
             if hasattr(request, 'user') and request.user.is_authenticated:
                 try:
                     current_user = DHIS2User.objects.get(id=request.user.id)
                 except DHIS2User.DoesNotExist:
-                    pass
-            
+                    current_user = None
+
             # Query the specific assessment
             queryset = SavedAssessment.objects.filter(id=assessment_id)
-            
+
             # Filter by user if available
             if current_user:
                 queryset = queryset.filter(created_by=current_user)
-            
+
             assessment = queryset.first()
-            
+
             if assessment:
                 return {
                     'id': assessment.id,
@@ -911,9 +1508,7 @@ class AssessmentSaveService:
                     'total_objectives': assessment.total_objectives,
                     'assessment_type': assessment.assessment_type
                 }
-            
             return None
-            
         except Exception as e:
             logger.error(f"Error retrieving assessment by ID: {str(e)}")
             return None
