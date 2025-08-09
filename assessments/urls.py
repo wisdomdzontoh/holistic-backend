@@ -12,6 +12,15 @@ router.register(r'holistic-assessment', views.HolisticAssessmentViewSet, basenam
 
 urlpatterns = [
     path('', include(router.urls)),
+    
+    # Custom URL patterns for holistic assessment to match frontend expectations
+    path('holistic/', include([
+        path('save_assessment/', views.HolisticAssessmentViewSet.as_view({'post': 'save_assessment'}), name='holistic-save-assessment'),
+        path('get_saved_assessments/', views.HolisticAssessmentViewSet.as_view({'get': 'get_saved_assessments'}), name='holistic-get-saved-assessments'),
+        path('get_assessment/<str:pk>/', views.HolisticAssessmentViewSet.as_view({'get': 'get_assessment'}), name='holistic-get-assessment'),
+        path('delete_assessment/<str:pk>/', views.HolisticAssessmentViewSet.as_view({'delete': 'delete_assessment'}), name='holistic-delete-assessment'),
+    ])),
+    
     path('dashboard/', include([
         path('summary/', views.AssessmentDashboardViewSet.as_view({'get': 'summary'}), name='dashboard-summary'),
         path('objectives/', views.AssessmentDashboardViewSet.as_view({'get': 'objectives'}), name='dashboard-objectives'),

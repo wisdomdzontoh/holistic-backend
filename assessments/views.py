@@ -1479,3 +1479,17 @@ class HolisticAssessmentViewSet(viewsets.ViewSet):
                 'status': 'error',
                 'message': 'Failed to retrieve assessment'
             }, status=500)
+
+    @action(detail=True, methods=['delete'])
+    def delete_assessment(self, request, pk=None):
+        """
+        Delete a specific saved assessment
+        """
+        try:
+            deleted = self.save_service.delete_assessment(request, pk)
+            if not deleted:
+                return Response({'status': 'error', 'message': 'Assessment not found'}, status=404)
+            return Response({'status': 'success', 'message': 'Assessment deleted'})
+        except Exception as e:
+            logger.error(f"Error deleting assessment {pk}: {str(e)}")
+            return Response({'status': 'error', 'message': 'Failed to delete assessment'}, status=500)

@@ -461,3 +461,7 @@ class HolisticAssessmentSaveSerializer(serializers.Serializer):
         required=False,
         help_text="Additional metadata about the assessment"
     ) 
+    snapshot = serializers.DictField(
+        required=False,
+        help_text="Optional snapshot of the Excel-like table to allow precise reload"
+    )

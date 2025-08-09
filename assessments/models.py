@@ -597,3 +597,64 @@ class SectorScore(models.Model):
         
         self.last_calculated = timezone.now()
         self.save()
+
+
+class SavedAssessment(models.Model):
+    """
+    Model to store user-generated holistic assessments
+    """
+    name = models.CharField(max_length=255, help_text="Name of the assessment")
+    org_unit_id = models.CharField(max_length=255, db_index=True)
+    org_unit_name = models.CharField(max_length=255, blank=True)
+    
+    # Assessment metadata
+    periods = models.JSONField(default=list, help_text="List of periods used in the assessment")
+    user_notes = models.TextField(blank=True, help_text="User notes and comments")
+    
+    # Assessment data
+    indicator_data = models.JSONField(default=dict, help_text="Indicator data with values for each period")
+    calculated_scores = models.JSONField(default=dict, help_text="Calculated scores and grades")
+    metadata = models.JSONField(default=dict, help_text="Additional metadata about the assessment")
+    
+    # User and session info
+    created_by = models.ForeignKey(
+        'dhis2_auth.DHIS2User',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='saved_assessments'
+    )
+    session_key = models.CharField(max_length=255, blank=True, help_text="DHIS2 session key")
+    
+    # Timestamps
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    
+    class Meta:
+        db_table = 'saved_assessments'
+        verbose_name = 'Saved Assessment'
+        verbose_name_plural = 'Saved Assessments'
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['org_unit_id']),
+            models.Index(fields=['created_at']),
+            models.Index(fields=['created_by']),
+        ]
+    
+    def __str__(self):
+        return f"{self.name} - {self.org_unit_name} ({self.created_at.strftime('%Y-%m-%d')})"
+    
+    @property
+    def total_indicators(self):
+        """Get total number of indicators in the assessment"""
+        return self.metadata.get('total_indicators', 0)
+    
+    @property
+    def total_objectives(self):
+        """Get total number of objectives in the assessment"""
+        return self.metadata.get('total_objectives', 0)
+    
+    @property
+    def assessment_type(self):
+        """Get assessment type"""
+        return self.metadata.get('assessment_type', 'holistic')

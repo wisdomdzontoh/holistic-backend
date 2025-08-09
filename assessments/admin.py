@@ -2,7 +2,7 @@ from django.contrib import admin
 from django.utils.html import format_html
 from django.utils import timezone
 from .models import (
-    DataSyncLog, IndicatorData, IndicatorScore, ObjectiveScore, SectorScore
+    DataSyncLog, IndicatorData, IndicatorScore, ObjectiveScore, SectorScore, SavedAssessment
 )
 
 
@@ -304,3 +304,47 @@ class SectorScoreAdmin(admin.ModelAdmin):
         
         self.message_user(request, f'{count} sector scores have been recalculated.')
     recalculate_scores.short_description = "Recalculate scores"
+
+
+@admin.register(SavedAssessment)
+class SavedAssessmentAdmin(admin.ModelAdmin):
+    """
+    Admin interface for saved assessments
+    """
+    list_display = [
+        'name', 'org_unit_name', 'created_by', 'created_at', 
+        'total_indicators', 'total_objectives', 'assessment_type'
+    ]
+    list_filter = ['created_at', 'created_by']
+    search_fields = ['name', 'org_unit_name', 'org_unit_id']
+    readonly_fields = [
+        'created_at', 'updated_at', 'total_indicators', 
+        'total_objectives'
+    ]
+    ordering = ['-created_at']
+    
+    fieldsets = (
+        ('Basic Information', {
+            'fields': ('name', 'org_unit_id', 'org_unit_name', 'created_by')
+        }),
+        ('Assessment Data', {
+            'fields': ('periods', 'user_notes', 'indicator_data', 'calculated_scores', 'metadata'),
+            'classes': ('collapse',)
+        }),
+        ('Timestamps', {
+            'fields': ('created_at', 'updated_at'),
+            'classes': ('collapse',)
+        }),
+    )
+    
+    def total_indicators(self, obj):
+        return obj.total_indicators
+    total_indicators.short_description = 'Total Indicators'
+    
+    def total_objectives(self, obj):
+        return obj.total_objectives
+    total_objectives.short_description = 'Total Objectives'
+    
+    def assessment_type(self, obj):
+        return obj.assessment_type
+    assessment_type.short_description = 'Assessment Type'

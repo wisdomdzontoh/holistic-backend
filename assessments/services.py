@@ -21,6 +21,7 @@ from configurations.models import (
     TrackedIndicator, Objective, AssessmentPeriod, 
     ScoringRule, Milestone
 )
+from organisation.services import AccessControlService
 from .models import (
     DataSyncLog, IndicatorData, IndicatorScore, 
     ObjectiveScore, SectorScore
@@ -779,33 +780,44 @@ class AssessmentSaveService:
                 # Extract assessment metadata
                 assessment_name = assessment_data.get('name', 'Unnamed Assessment')
                 org_unit_id = assessment_data.get('org_unit_id')
+                org_unit_name = assessment_data.get('org_unit_name', '')
                 periods = assessment_data.get('periods', [])
                 user_notes = assessment_data.get('user_notes', '')
                 
-                # Create assessment record
-                assessment = {
-                    'name': assessment_name,
-                    'org_unit_id': org_unit_id,
-                    'org_unit_name': assessment_data.get('org_unit_name', ''),
-                    'periods': periods,
-                    'user_notes': user_notes,
-                    'created_by': request.user if hasattr(request, 'user') else None,
-                    'created_at': timezone.now(),
-                    'data': assessment_data.get('indicator_data', {}),
-                    'scores': assessment_data.get('calculated_scores', {}),
-                    'metadata': {
-                        'total_indicators': assessment_data.get('total_indicators', 0),
-                        'total_objectives': assessment_data.get('total_objectives', 0),
-                        'assessment_type': 'holistic'
-                    }
+                # Get the current user from the request
+                from dhis2_auth.models import DHIS2User
+                current_user = None
+                if hasattr(request, 'user') and request.user.is_authenticated:
+                    try:
+                        current_user = DHIS2User.objects.get(id=request.user.id)
+                    except DHIS2User.DoesNotExist:
+                        pass
+                
+                # Create the saved assessment record
+                from .models import SavedAssessment
+                saved_assessment = SavedAssessment.objects.create(
+                    name=assessment_name,
+                    org_unit_id=org_unit_id,
+                    org_unit_name=org_unit_name,
+                    periods=periods,
+                    user_notes=user_notes,
+                    indicator_data=assessment_data.get('indicator_data', {}),
+                    calculated_scores=assessment_data.get('calculated_scores', {}),
+                    metadata=assessment_data.get('metadata', {}),
+                    created_by=current_user,
+                    session_key=request.session.session_key if hasattr(request, 'session') else ''
+                )
+                
+                logger.info(f"Assessment saved: {assessment_name} for {org_unit_id} (ID: {saved_assessment.id})")
+                return {
+                    'id': saved_assessment.id,
+                    'name': saved_assessment.name,
+                    'org_unit_id': saved_assessment.org_unit_id,
+                    'org_unit_name': saved_assessment.org_unit_name,
+                    'created_at': saved_assessment.created_at.isoformat(),
+                    'total_indicators': saved_assessment.total_indicators,
+                    'total_objectives': saved_assessment.total_objectives
                 }
-                
-                # For now, we'll store this as a simple JSON structure
-                # In a full implementation, you might want to create proper models
-                # for storing assessments, indicator values, and scores
-                
-                logger.info(f"Assessment saved: {assessment_name} for {org_unit_id}")
-                return assessment
                 
         except Exception as e:
             logger.error(f"Error saving assessment: {str(e)}")
@@ -815,17 +827,122 @@ class AssessmentSaveService:
         """
         Retrieve saved assessments for the current user
         """
-        # This would query the assessment storage
-        # For now, return empty list
-        return []
+        try:
+            from .models import SavedAssessment
+            
+            # Get the current user
+            from dhis2_auth.models import DHIS2User
+            current_user = None
+            if hasattr(request, 'user') and request.user.is_authenticated:
+                try:
+                    current_user = DHIS2User.objects.get(id=request.user.id)
+                except DHIS2User.DoesNotExist:
+                    pass
+            
+            # Query saved assessments
+            queryset = SavedAssessment.objects.all()
+            
+            # Filter by user if available
+            if current_user:
+                queryset = queryset.filter(created_by=current_user)
+            
+            # Filter by org unit if specified
+            if org_unit_id:
+                queryset = queryset.filter(org_unit_id=org_unit_id)
+            
+            # Return assessment summaries
+            assessments = []
+            for assessment in queryset.order_by('-created_at'):
+                assessments.append({
+                    'id': assessment.id,
+                    'name': assessment.name,
+                    'org_unit_id': assessment.org_unit_id,
+                    'org_unit_name': assessment.org_unit_name,
+                    'created_at': assessment.created_at.isoformat(),
+                    'total_indicators': assessment.total_indicators,
+                    'total_objectives': assessment.total_objectives,
+                    'assessment_type': assessment.assessment_type
+                })
+            
+            return assessments
+            
+        except Exception as e:
+            logger.error(f"Error retrieving user assessments: {str(e)}")
+            return []
     
     def get_assessment_by_id(self, request, assessment_id):
         """
         Retrieve a specific saved assessment
         """
-        # This would query the assessment storage by ID
-        # For now, return None
-        return None
+        try:
+            from .models import SavedAssessment
+            
+            # Get the current user
+            from dhis2_auth.models import DHIS2User
+            current_user = None
+            if hasattr(request, 'user') and request.user.is_authenticated:
+                try:
+                    current_user = DHIS2User.objects.get(id=request.user.id)
+                except DHIS2User.DoesNotExist:
+                    pass
+            
+            # Query the specific assessment
+            queryset = SavedAssessment.objects.filter(id=assessment_id)
+            
+            # Filter by user if available
+            if current_user:
+                queryset = queryset.filter(created_by=current_user)
+            
+            assessment = queryset.first()
+            
+            if assessment:
+                return {
+                    'id': assessment.id,
+                    'name': assessment.name,
+                    'org_unit_id': assessment.org_unit_id,
+                    'org_unit_name': assessment.org_unit_name,
+                    'periods': assessment.periods,
+                    'user_notes': assessment.user_notes,
+                    'indicator_data': assessment.indicator_data,
+                    'calculated_scores': assessment.calculated_scores,
+                    'metadata': assessment.metadata,
+                    'created_at': assessment.created_at.isoformat(),
+                    'total_indicators': assessment.total_indicators,
+                    'total_objectives': assessment.total_objectives,
+                    'assessment_type': assessment.assessment_type
+                }
+            
+            return None
+            
+        except Exception as e:
+            logger.error(f"Error retrieving assessment by ID: {str(e)}")
+            return None
+
+    def delete_assessment(self, request, assessment_id: str) -> bool:
+        """
+        Delete a saved assessment owned by the current user (if available).
+        Returns True if a record was deleted, False otherwise.
+        """
+        try:
+            from .models import SavedAssessment
+            from dhis2_auth.models import DHIS2User
+
+            current_user = None
+            if hasattr(request, 'user') and request.user.is_authenticated:
+                try:
+                    current_user = DHIS2User.objects.get(id=request.user.id)
+                except DHIS2User.DoesNotExist:
+                    current_user = None
+
+            queryset = SavedAssessment.objects.filter(id=assessment_id)
+            if current_user:
+                queryset = queryset.filter(created_by=current_user)
+
+            deleted_count, _ = queryset.delete()
+            return deleted_count > 0
+        except Exception as e:
+            logger.error(f"Error deleting assessment {assessment_id}: {str(e)}")
+            return False
 
 # Keep the existing DataSyncService for backward compatibility
 # but mark it as deprecated
