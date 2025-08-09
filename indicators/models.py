@@ -20,7 +20,13 @@ class TrackedIndicator(models.Model):
     
     # Basic information
     name = models.CharField(max_length=255, help_text="Human-readable name for the indicator")
-    dhis2_uid = models.CharField(max_length=255, unique=True, help_text="DHIS2 UID of the indicator/data element")
+    dhis2_uid = models.CharField(
+        max_length=255,
+        unique=True,
+        blank=True,
+        null=True,
+        help_text="DHIS2 UID of the indicator/data element (leave blank for manual entry)"
+    )
     indicator_type = models.CharField(
         max_length=20,
         choices=IndicatorType.choices,

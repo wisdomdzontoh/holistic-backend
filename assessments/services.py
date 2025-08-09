@@ -462,11 +462,16 @@ class RealTimeDHIS2Service:
             if not org_unit_ids or not periods:
                 raise ValidationError("Organization units and periods are required")
             
-            # Fetch active indicators if not specified
+            # Fetch active indicators if not specified; include manual indicators (no dhis2_uid)
+            manual_indicators = []
             if not indicator_uids:
                 indicators = TrackedIndicator.objects.filter(is_active=True)
-                indicator_uids = [ind.dhis2_uid for ind in indicators]
-                logger.info(f"No indicator UIDs specified, using all {len(indicator_uids)} active indicators")
+                # Only include non-empty UIDs for DHIS2 fetch; keep track of manual ones
+                indicator_uids = [ind.dhis2_uid for ind in indicators if ind.dhis2_uid]
+                manual_indicators = [ind for ind in indicators if not ind.dhis2_uid]
+                logger.info(
+                    f"Using {len(indicator_uids)} DHIS2 indicators and {len(manual_indicators)} manual indicators"
+                )
             
             # Fetch data for each indicator
             assessment_data = {
@@ -490,10 +495,14 @@ class RealTimeDHIS2Service:
             if total_weights == 0:
                 # No indicator weights configured - fetch indicators directly and group them evenly
                 logger.info("No indicator weights configured, distributing indicators across objectives")
-                all_indicators = TrackedIndicator.objects.filter(
+                # Combine DHIS2-backed and manual indicators
+                all_indicators = list(TrackedIndicator.objects.filter(
                     dhis2_uid__in=indicator_uids,
                     is_active=True
-                )
+                ))
+                # Append manual ones gathered above if any
+                if manual_indicators:
+                    all_indicators.extend(manual_indicators)
                 
                 # Distribute indicators evenly across objectives
                 indicators_per_objective = len(all_indicators) // max(len(objectives), 1)
@@ -532,18 +541,25 @@ class RealTimeDHIS2Service:
                         # Fetch data for each period
                         for period in periods:
                             try:
-                                value = self._fetch_single_indicator_data(
-                                    indicator, org_unit_ids[0], period
-                                )
-                                # Handle NaN and infinite values
-                                clean_value = self._clean_numeric_value(value)
-                                indicator_data['data_values'][period] = {
-                                    'value': clean_value,
-                                    'dhis2_value': clean_value,
-                                    'manual_override': None
-                                }
+                                if indicator.dhis2_uid:
+                                    value = self._fetch_single_indicator_data(
+                                        indicator, org_unit_ids[0], period
+                                    )
+                                    clean_value = self._clean_numeric_value(value)
+                                    indicator_data['data_values'][period] = {
+                                        'value': clean_value,
+                                        'dhis2_value': clean_value,
+                                        'manual_override': None
+                                    }
+                                else:
+                                    # Manual indicator – initialize empty value, editable on FE
+                                    indicator_data['data_values'][period] = {
+                                        'value': None,
+                                        'dhis2_value': None,
+                                        'manual_override': None
+                                    }
                             except Exception as e:
-                                logger.warning(f"Failed to fetch {indicator.name} for period {period}: {str(e)}")
+                                logger.warning(f"Failed to process {indicator.name} for period {period}: {str(e)}")
                                 indicator_data['data_values'][period] = {
                                     'value': None,
                                     'dhis2_value': None,
@@ -643,7 +659,8 @@ class RealTimeDHIS2Service:
                     indicator_weights_map = {}
                     for indicator_weight in objective.indicator_weights.all():
                         indicator = indicator_weight.indicator
-                        if indicator.dhis2_uid in indicator_uids and indicator.is_active:
+                        # Include DHIS2-backed indicators present in list and manual indicators (no UID)
+                        if (indicator.dhis2_uid in indicator_uids or not indicator.dhis2_uid) and indicator.is_active:
                             objective_indicators.append(indicator)
                             indicator_weights_map[indicator.id] = indicator_weight.weight
                     
@@ -665,18 +682,24 @@ class RealTimeDHIS2Service:
                         # Fetch data for each period
                         for period in periods:
                             try:
-                                value = self._fetch_single_indicator_data(
-                                    indicator, org_unit_ids[0], period
-                                )
-                                # Handle NaN and infinite values
-                                clean_value = self._clean_numeric_value(value)
-                                indicator_data['data_values'][period] = {
-                                    'value': clean_value,
-                                    'dhis2_value': clean_value,
-                                    'manual_override': None
-                                }
+                                if indicator.dhis2_uid:
+                                    value = self._fetch_single_indicator_data(
+                                        indicator, org_unit_ids[0], period
+                                    )
+                                    clean_value = self._clean_numeric_value(value)
+                                    indicator_data['data_values'][period] = {
+                                        'value': clean_value,
+                                        'dhis2_value': clean_value,
+                                        'manual_override': None
+                                    }
+                                else:
+                                    indicator_data['data_values'][period] = {
+                                        'value': None,
+                                        'dhis2_value': None,
+                                        'manual_override': None
+                                    }
                             except Exception as e:
-                                logger.warning(f"Failed to fetch {indicator.name} for period {period}: {str(e)}")
+                                logger.warning(f"Failed to process {indicator.name} for period {period}: {str(e)}")
                                 indicator_data['data_values'][period] = {
                                     'value': None,
                                     'dhis2_value': None,

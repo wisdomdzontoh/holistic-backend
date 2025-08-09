@@ -1,4 +1,5 @@
 from django.contrib import admin
+from django import forms
 from django.utils.html import format_html
 from django.utils import timezone
 from django.http import HttpResponse
@@ -11,6 +12,63 @@ from import_export.admin import ImportExportModelAdmin
 from import_export.widgets import ForeignKeyWidget, ManyToManyWidget, Widget
 from import_export.formats import base_formats
 from .models import TrackedIndicator, IndicatorCategory, IndicatorCategoryMapping, IndicatorThreshold
+
+
+class TrackedIndicatorAdminForm(forms.ModelForm):
+    """
+    Admin form that exposes a 'data_source' hint to distinguish DHIS2 vs Manual indicators
+    without adding a DB field. Validation enforces coherent configurations.
+    """
+    DATA_SOURCE_CHOICES = (
+        ('dhis2', 'DHIS2'),
+        ('manual', 'Manual'),
+    )
+
+    data_source = forms.ChoiceField(
+        choices=DATA_SOURCE_CHOICES,
+        required=False,
+        help_text="Select 'DHIS2' for indicators fetched from DHIS2 (requires UID), or 'Manual' for user-entered values."
+    )
+
+    class Meta:
+        model = TrackedIndicator
+        fields = '__all__'
+
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Default data_source based on dhis2_uid presence
+        instance = kwargs.get('instance') or getattr(self, 'instance', None)
+        if instance and instance.pk:
+            self.fields['data_source'].initial = 'dhis2' if instance.dhis2_uid else 'manual'
+        else:
+            # New form → default to DHIS2
+            self.fields['data_source'].initial = 'dhis2'
+
+    def clean(self):
+        cleaned = super().clean()
+        data_source = cleaned.get('data_source') or ('dhis2' if cleaned.get('dhis2_uid') else 'manual')
+        dhis2_uid = cleaned.get('dhis2_uid')
+        formula = cleaned.get('formula')
+        indicator_type = cleaned.get('indicator_type')
+
+        # If calculated type, require formula and ensure no DHIS2 UID
+        if indicator_type == TrackedIndicator.IndicatorType.CALCULATED:
+            if not formula:
+                raise forms.ValidationError("Calculated indicators require a formula.")
+            cleaned['dhis2_uid'] = None
+
+        # DHIS2 data source requires UID
+        if data_source == 'dhis2' and not dhis2_uid and indicator_type != TrackedIndicator.IndicatorType.CALCULATED:
+            raise forms.ValidationError("DHIS2 UID is required when Data source is DHIS2.")
+
+        # Manual data source cannot have a formula unless it's Calculated type
+        if data_source == 'manual' and indicator_type != TrackedIndicator.IndicatorType.CALCULATED:
+            if formula:
+                raise forms.ValidationError("Manual indicators cannot have a formula. Use 'Calculated' type instead.")
+            # Ensure UID is cleared for manual indicators
+            cleaned['dhis2_uid'] = None
+
+        return cleaned
 
 
 class TrackedIndicatorResource(resources.ModelResource):
@@ -37,7 +95,8 @@ class TrackedIndicatorResource(resources.ModelResource):
     
     class Meta:
         model = TrackedIndicator
-        import_id_fields = ('dhis2_uid',)
+        # Allow import using name if dhis2_uid is blank. We'll handle creation in before_import_row
+        import_id_fields = ()
         export_order = (
             'name', 'dhis2_uid', 'indicator_type', 'indicator_number', 
             'display_order', 'formula', 'target_value', 'target_type',
@@ -54,9 +113,9 @@ class TrackedIndicatorResource(resources.ModelResource):
     
     def before_import_row(self, row, **kwargs):
         """Validate and clean data before import"""
-        # Ensure dhis2_uid is provided
-        if not row.get('dhis2_uid'):
-            raise ValidationError("DHIS2 UID is required")
+        # dhis2_uid is optional for manual indicators. When absent, do not enforce uniqueness by UID.
+        if row.get('dhis2_uid') in ('', None):
+            row['dhis2_uid'] = None
         
         # Set default values
         if not row.get('indicator_type'):
@@ -132,9 +191,11 @@ class TrackedIndicatorAdmin(ImportExportModelAdmin):
     ]
     ordering = ['name']
     
+    form = TrackedIndicatorAdminForm
+
     fieldsets = (
         ('Basic Information', {
-            'fields': ('name', 'dhis2_uid', 'indicator_type', 'is_active', 'description')
+            'fields': ('name', 'data_source', 'dhis2_uid', 'indicator_type', 'is_active', 'description')
         }),
         ('Excel Structure', {
             'fields': ('indicator_number', 'display_order'),
