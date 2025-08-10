@@ -1,9 +1,11 @@
 from rest_framework import serializers
 from .models import (
-    DataSyncLog, IndicatorData, IndicatorScore, ObjectiveScore, SectorScore
+    DataSyncLog, IndicatorData, IndicatorScore, ObjectiveScore, 
+    SectorScore, SavedAssessment, AuditLog, ConflictResolution
 )
 from indicators.models import TrackedIndicator
 from configurations.models import Objective, AssessmentPeriod
+from dhis2_auth.models import DHIS2User
 
 
 class DataSyncLogSerializer(serializers.ModelSerializer):
@@ -464,4 +466,185 @@ class HolisticAssessmentSaveSerializer(serializers.Serializer):
     snapshot = serializers.DictField(
         required=False,
         help_text="Optional snapshot of the Excel-like table to allow precise reload"
+    )
+
+
+class AuditLogSerializer(serializers.ModelSerializer):
+    """
+    Serializer for audit logs
+    """
+    user_username = serializers.CharField(source='user.username', read_only=True)
+    user_email = serializers.CharField(source='user.email', read_only=True)
+    action_type_display = serializers.CharField(source='get_action_type_display', read_only=True)
+    entity_type_display = serializers.CharField(source='get_entity_type_display', read_only=True)
+    change_reason_display = serializers.CharField(source='get_change_reason_display', read_only=True)
+    
+    class Meta:
+        model = AuditLog
+        fields = [
+            'id', 'action_type', 'action_type_display', 'entity_type', 'entity_type_display',
+            'entity_id', 'user', 'user_username', 'user_email', 'session_key', 'ip_address',
+            'user_agent', 'change_reason', 'change_reason_display', 'change_description',
+            'old_values', 'new_values', 'changed_fields', 'org_unit_id', 'org_unit_name',
+            'assessment_period', 'indicator_id', 'objective_id', 'is_conflict_resolution',
+            'conflict_type', 'resolution_method', 'created_at'
+        ]
+        read_only_fields = [
+            'id', 'created_at', 'old_values', 'new_values', 'changed_fields',
+            'session_key', 'ip_address', 'user_agent'
+        ]
+
+
+class ConflictResolutionSerializer(serializers.ModelSerializer):
+    """
+    Serializer for conflict resolutions
+    """
+    resolved_by_username = serializers.CharField(source='resolved_by.username', read_only=True)
+    conflict_type_display = serializers.CharField(source='get_conflict_type_display', read_only=True)
+    resolution_method_display = serializers.CharField(source='get_resolution_method_display', read_only=True)
+    resolution_status_display = serializers.CharField(source='get_resolution_status_display', read_only=True)
+    
+    class Meta:
+        model = ConflictResolution
+        fields = [
+            'id', 'conflict_type', 'conflict_type_display', 'entity_type', 'entity_id',
+            'manual_data', 'dhis2_data', 'conflict_fields', 'resolution_method',
+            'resolution_method_display', 'resolution_status', 'resolution_status_display',
+            'resolved_by', 'resolved_by_username', 'resolution_notes', 'org_unit_id',
+            'org_unit_name', 'assessment_period', 'detected_at', 'resolved_at'
+        ]
+        read_only_fields = [
+            'id', 'detected_at', 'manual_data', 'dhis2_data', 'conflict_fields'
+        ]
+
+
+class ConflictResolutionCreateSerializer(serializers.ModelSerializer):
+    """
+    Serializer for creating conflict resolutions
+    """
+    class Meta:
+        model = ConflictResolution
+        fields = [
+            'conflict_type', 'entity_type', 'entity_id', 'manual_data', 'dhis2_data',
+            'conflict_fields', 'org_unit_id', 'org_unit_name', 'assessment_period'
+        ]
+
+
+class ConflictResolutionUpdateSerializer(serializers.ModelSerializer):
+    """
+    Serializer for updating conflict resolutions
+    """
+    class Meta:
+        model = ConflictResolution
+        fields = [
+            'resolution_method', 'resolution_status', 'resolution_notes'
+        ]
+
+
+class ManualOverrideSerializer(serializers.Serializer):
+    """
+    Serializer for manual override requests
+    """
+    score = serializers.IntegerField(
+        min_value=-5, 
+        max_value=5,
+        help_text="New score value (-5 to 5)"
+    )
+    reason = serializers.CharField(
+        max_length=500,
+        help_text="Reason for the manual override"
+    )
+    entity_type = serializers.ChoiceField(
+        choices=AuditLog.EntityType.choices,
+        help_text="Type of entity being overridden"
+    )
+    entity_id = serializers.CharField(
+        help_text="ID of the entity being overridden"
+    )
+
+
+class AuditLogFilterSerializer(serializers.Serializer):
+    """
+    Serializer for filtering audit logs
+    """
+    action_type = serializers.ChoiceField(
+        choices=AuditLog.ActionType.choices,
+        required=False,
+        help_text="Filter by action type"
+    )
+    entity_type = serializers.ChoiceField(
+        choices=AuditLog.EntityType.choices,
+        required=False,
+        help_text="Filter by entity type"
+    )
+    change_reason = serializers.ChoiceField(
+        choices=AuditLog.ChangeReason.choices,
+        required=False,
+        help_text="Filter by change reason"
+    )
+    user_id = serializers.IntegerField(
+        required=False,
+        help_text="Filter by user ID"
+    )
+    org_unit_id = serializers.CharField(
+        required=False,
+        help_text="Filter by organization unit ID"
+    )
+    assessment_period = serializers.CharField(
+        required=False,
+        help_text="Filter by assessment period"
+    )
+    start_date = serializers.DateField(
+        required=False,
+        help_text="Filter by start date"
+    )
+    end_date = serializers.DateField(
+        required=False,
+        help_text="Filter by end date"
+    )
+    is_conflict_resolution = serializers.BooleanField(
+        required=False,
+        help_text="Filter by conflict resolution status"
+    )
+
+
+class ConflictResolutionFilterSerializer(serializers.Serializer):
+    """
+    Serializer for filtering conflict resolutions
+    """
+    conflict_type = serializers.ChoiceField(
+        choices=ConflictResolution.ConflictType.choices,
+        required=False,
+        help_text="Filter by conflict type"
+    )
+    entity_type = serializers.ChoiceField(
+        choices=AuditLog.EntityType.choices,
+        required=False,
+        help_text="Filter by entity type"
+    )
+    resolution_status = serializers.ChoiceField(
+        choices=ConflictResolution.ResolutionStatus.choices,
+        required=False,
+        help_text="Filter by resolution status"
+    )
+    resolution_method = serializers.ChoiceField(
+        choices=ConflictResolution.ResolutionMethod.choices,
+        required=False,
+        help_text="Filter by resolution method"
+    )
+    org_unit_id = serializers.CharField(
+        required=False,
+        help_text="Filter by organization unit ID"
+    )
+    assessment_period = serializers.CharField(
+        required=False,
+        help_text="Filter by assessment period"
+    )
+    start_date = serializers.DateField(
+        required=False,
+        help_text="Filter by start date"
+    )
+    end_date = serializers.DateField(
+        required=False,
+        help_text="Filter by end date"
     )

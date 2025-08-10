@@ -2,7 +2,7 @@ from django.contrib import admin
 from django.utils.html import format_html
 from django.utils import timezone
 from .models import (
-    Objective, ScoringRule, WeightingScheme, ObjectiveWeight, 
+    Milestone, Objective, ScoringRule, WeightingScheme, ObjectiveWeight, 
     IndicatorWeight, AssessmentPeriod, SystemConfiguration
 )
 
@@ -34,15 +34,18 @@ class ObjectiveAdmin(admin.ModelAdmin):
     """
     list_display = [
         'name', 'code', 'order', 'is_active', 'indicator_count', 
-        'total_weight', 'color_preview'
+        'total_weight', 'milestone', 'color_preview'
     ]
-    list_filter = ['is_active', 'created_at']
+    list_filter = ['is_active', 'created_at', 'milestone']
     search_fields = ['name', 'description', 'code']
     ordering = ['order', 'name']
     
     fieldsets = (
         ('Basic Information', {
             'fields': ('name', 'description', 'code', 'order', 'is_active')
+        }),
+        ('Milestone Assignment', {
+            'fields': ('milestone',)
         }),
         ('Display Settings', {
             'fields': ('color',)
@@ -82,6 +85,65 @@ class ObjectiveAdmin(admin.ModelAdmin):
         updated = queryset.update(is_active=False)
         self.message_user(request, f'{updated} objectives have been deactivated.')
     deactivate_objectives.short_description = "Deactivate selected objectives"
+
+
+@admin.register(Milestone)
+class MilestoneAdmin(admin.ModelAdmin):
+    """
+    Admin interface for milestones
+    """
+    list_display = [
+        'name', 'code', 'order', 'score', 'is_active', 'objective_count', 
+        'color_preview'
+    ]
+    list_filter = ['is_active', 'score', 'created_at']
+    search_fields = ['name', 'description', 'code']
+    ordering = ['order', 'name']
+    
+    fieldsets = (
+        ('Basic Information', {
+            'fields': ('name', 'description', 'code', 'order', 'is_active')
+        }),
+        ('Scoring', {
+            'fields': ('score',)
+        }),
+        ('Display Settings', {
+            'fields': ('color',)
+        }),
+    )
+    
+    def objective_count(self, obj):
+        """Count of objectives using this milestone"""
+        return obj.objectives.count()
+    objective_count.short_description = 'Objectives'
+    
+    def color_preview(self, obj):
+        """Show color preview"""
+        return format_html(
+            '<div style="background-color: {}; width: 20px; height: 20px; border: 1px solid #ccc;"></div>',
+            obj.color
+        )
+    color_preview.short_description = 'Color'
+    
+    actions = ['activate_milestones', 'deactivate_milestones', 'reset_scores']
+    
+    def activate_milestones(self, request, queryset):
+        """Activate selected milestones"""
+        updated = queryset.update(is_active=True)
+        self.message_user(request, f'{updated} milestones have been activated.')
+    activate_milestones.short_description = "Activate selected milestones"
+    
+    def deactivate_milestones(self, request, queryset):
+        """Deactivate selected milestones"""
+        updated = queryset.update(is_active=False)
+        self.message_user(request, f'{updated} milestones have been deactivated.')
+    deactivate_milestones.short_description = "Deactivate selected milestones"
+    
+    def reset_scores(self, request, queryset):
+        """Reset scores to default (-2)"""
+        updated = queryset.update(score=-2)
+        self.message_user(request, f'{updated} milestone scores have been reset to -2.')
+    reset_scores.short_description = "Reset scores to default"
 
 
 @admin.register(ScoringRule)

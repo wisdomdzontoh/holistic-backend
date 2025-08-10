@@ -10,7 +10,8 @@ import logging
 from rest_framework.exceptions import ValidationError
 
 from .models import (
-    DataSyncLog, IndicatorData, IndicatorScore, ObjectiveScore, SectorScore
+    DataSyncLog, IndicatorData, IndicatorScore, ObjectiveScore, SectorScore,
+    SavedAssessment, AuditLog, ConflictResolution, MilestoneScore
 )
 from .serializers import (
     DataSyncLogSerializer, DataSyncLogCreateSerializer,
@@ -22,7 +23,9 @@ from .serializers import (
     ScoreOverrideSerializer, DashboardSummarySerializer,
     ObjectiveDashboardSerializer, IndicatorDashboardSerializer,
     AssessmentReportSerializer, HolisticAssessmentRequestSerializer,
-    HolisticAssessmentSaveSerializer
+    HolisticAssessmentSaveSerializer, AuditLogSerializer, ConflictResolutionSerializer,
+    ConflictResolutionCreateSerializer, ConflictResolutionUpdateSerializer,
+    ManualOverrideSerializer, AuditLogFilterSerializer, ConflictResolutionFilterSerializer
 )
 from .services import DataSyncService, ScoreCalculationService, DashboardService, RealTimeDHIS2Service, AssessmentSaveService
 from dhis2_auth.session import get_dhis2_user, get_dhis2_user_from_request, get_dhis2_session_data
@@ -600,8 +603,28 @@ class AssessmentManagementViewSet(viewsets.ViewSet):
                     'color': objective.color,
                     'order': objective.order,
                     'indicators': [],
-                    'score': None
+                    'score': None,
+                    'milestone': None
                 }
+                
+                # Add milestone information if it exists
+                if objective.milestone:
+                    # Get milestone score for this assessment
+                    milestone_score = MilestoneScore.objects.filter(
+                        milestone=objective.milestone,
+                        org_unit_id=org_unit_id,
+                        assessment_period=assessment_period
+                    ).first()
+                    
+                    objective_data['milestone'] = {
+                        'id': objective.milestone.id,
+                        'name': objective.milestone.name,
+                        'code': objective.milestone.code,
+                        'color': objective.milestone.color,
+                        'score': milestone_score.score if milestone_score else -2,  # Default score
+                        'score_color': milestone_score.score_color if milestone_score else '#dc3545',
+                        'score_label': milestone_score.score_label if milestone_score else 'Severely Underperforming'
+                    }
                 
                 # Get objective score
                 obj_score = ObjectiveScore.objects.filter(
@@ -1211,7 +1234,8 @@ class AssessmentManagementViewSet(viewsets.ViewSet):
                             'id': objective.milestone.id if objective.milestone else None,
                             'name': objective.milestone.name if objective.milestone else None,
                             'code': objective.milestone.code if objective.milestone else None,
-                            'color': objective.milestone.color if objective.milestone else None
+                            'color': objective.milestone.color if objective.milestone else None,
+                            'score': None  # Will be populated from MilestoneScore
                         } if objective.milestone else None,
                         'indicators': [],
                         'score': None
@@ -1233,6 +1257,24 @@ class AssessmentManagementViewSet(viewsets.ViewSet):
                                 'total_indicators': obj_score.total_indicators,
                                 'scored_indicators': obj_score.scored_indicators
                             }
+                    
+                    # Get milestone score if milestone exists
+                    if objective.milestone and objective_data['milestone']:
+                        milestone_score = MilestoneScore.objects.filter(
+                            milestone=objective.milestone,
+                            org_unit_id=org_unit_ids[0],
+                            assessment_period=period
+                        ).first()
+                        
+                        if milestone_score:
+                            objective_data['milestone']['score'] = milestone_score.score
+                            objective_data['milestone']['score_color'] = milestone_score.score_color
+                            objective_data['milestone']['score_label'] = milestone_score.score_label
+                        else:
+                            # Set default values if no milestone score exists
+                            objective_data['milestone']['score'] = -2
+                            objective_data['milestone']['score_color'] = '#dc3545'
+                            objective_data['milestone']['score_label'] = 'Severely Underperforming'
                     
                     # Get indicators for this objective
                     indicators = TrackedIndicator.objects.filter(
@@ -1566,3 +1608,363 @@ class HolisticAssessmentViewSet(viewsets.ViewSet):
         except Exception as e:
             logger.error(f"Error deleting assessment {pk}: {str(e)}")
             return Response({'status': 'error', 'message': 'Failed to delete assessment'}, status=500)
+
+
+class AuditLogViewSet(viewsets.ReadOnlyModelViewSet):
+    """
+    ViewSet for audit logs - read-only to maintain audit trail integrity
+    """
+    queryset = AuditLog.objects.all()
+    serializer_class = AuditLogSerializer
+    permission_classes = [IsAuthenticated]
+    
+    def get_queryset(self):
+        """Filter audit logs based on query parameters"""
+        queryset = AuditLog.objects.all()
+        
+        # Apply filters
+        action_type = self.request.query_params.get('action_type')
+        if action_type:
+            queryset = queryset.filter(action_type=action_type)
+        
+        entity_type = self.request.query_params.get('entity_type')
+        if entity_type:
+            queryset = queryset.filter(entity_type=entity_type)
+        
+        change_reason = self.request.query_params.get('change_reason')
+        if change_reason:
+            queryset = queryset.filter(change_reason=change_reason)
+        
+        user_id = self.request.query_params.get('user_id')
+        if user_id:
+            queryset = queryset.filter(user_id=user_id)
+        
+        org_unit_id = self.request.query_params.get('org_unit_id')
+        if org_unit_id:
+            queryset = queryset.filter(org_unit_id=org_unit_id)
+        
+        assessment_period = self.request.query_params.get('assessment_period')
+        if assessment_period:
+            queryset = queryset.filter(assessment_period=assessment_period)
+        
+        start_date = self.request.query_params.get('start_date')
+        if start_date:
+            queryset = queryset.filter(created_at__date__gte=start_date)
+        
+        end_date = self.request.query_params.get('end_date')
+        if end_date:
+            queryset = queryset.filter(created_at__date__lte=end_date)
+        
+        is_conflict_resolution = self.request.query_params.get('is_conflict_resolution')
+        if is_conflict_resolution is not None:
+            queryset = queryset.filter(is_conflict_resolution=is_conflict_resolution.lower() == 'true')
+        
+        return queryset.order_by('-created_at')
+    
+    @action(detail=False, methods=['get'])
+    def summary(self, request):
+        """Get audit log summary statistics"""
+        queryset = self.get_queryset()
+        
+        summary = {
+            'total_logs': queryset.count(),
+            'action_types': {},
+            'entity_types': {},
+            'change_reasons': {},
+            'recent_activity': [],
+            'conflict_resolutions': queryset.filter(is_conflict_resolution=True).count()
+        }
+        
+        # Action type distribution
+        for action_type, _ in AuditLog.ActionType.choices:
+            summary['action_types'][action_type] = queryset.filter(action_type=action_type).count()
+        
+        # Entity type distribution
+        for entity_type, _ in AuditLog.EntityType.choices:
+            summary['entity_types'][entity_type] = queryset.filter(entity_type=entity_type).count()
+        
+        # Change reason distribution
+        for change_reason, _ in AuditLog.ChangeReason.choices:
+            summary['change_reasons'][change_reason] = queryset.filter(change_reason=change_reason).count()
+        
+        # Recent activity (last 10 logs)
+        recent_logs = queryset[:10]
+        summary['recent_activity'] = AuditLogSerializer(recent_logs, many=True).data
+        
+        return Response(summary)
+    
+    @action(detail=False, methods=['post'])
+    def export(self, request):
+        """Export audit logs to CSV"""
+        from django.http import HttpResponse
+        import csv
+        
+        queryset = self.get_queryset()
+        
+        response = HttpResponse(content_type='text/csv')
+        response['Content-Disposition'] = f'attachment; filename="audit_logs_{timezone.now().strftime("%Y%m%d_%H%M%S")}.csv"'
+        
+        writer = csv.writer(response)
+        writer.writerow([
+            'ID', 'Action Type', 'Entity Type', 'Entity ID', 'User', 
+            'Change Reason', 'Description', 'Org Unit', 'Assessment Period',
+            'Created At', 'Old Values', 'New Values', 'Changed Fields'
+        ])
+        
+        for log in queryset:
+            writer.writerow([
+                log.id, log.action_type, log.entity_type, log.entity_id,
+                log.user.username if log.user else 'System',
+                log.change_reason, log.change_description, log.org_unit_name,
+                log.assessment_period, log.created_at,
+                str(log.old_values), str(log.new_values), str(log.changed_fields)
+            ])
+        
+        return response
+
+
+class ConflictResolutionViewSet(viewsets.ModelViewSet):
+    """
+    ViewSet for conflict resolutions
+    """
+    queryset = ConflictResolution.objects.all()
+    serializer_class = ConflictResolutionSerializer
+    permission_classes = [IsAuthenticated]
+    
+    def get_serializer_class(self):
+        """Return appropriate serializer based on action"""
+        if self.action == 'create':
+            return ConflictResolutionCreateSerializer
+        elif self.action in ['update', 'partial_update']:
+            return ConflictResolutionUpdateSerializer
+        return ConflictResolutionSerializer
+    
+    def get_queryset(self):
+        """Filter conflict resolutions based on query parameters"""
+        queryset = ConflictResolution.objects.all()
+        
+        # Apply filters
+        conflict_type = self.request.query_params.get('conflict_type')
+        if conflict_type:
+            queryset = queryset.filter(conflict_type=conflict_type)
+        
+        entity_type = self.request.query_params.get('entity_type')
+        if entity_type:
+            queryset = queryset.filter(entity_type=entity_type)
+        
+        resolution_status = self.request.query_params.get('resolution_status')
+        if resolution_status:
+            queryset = queryset.filter(resolution_status=resolution_status)
+        
+        resolution_method = self.request.query_params.get('resolution_method')
+        if resolution_method:
+            queryset = queryset.filter(resolution_method=resolution_method)
+        
+        org_unit_id = self.request.query_params.get('org_unit_id')
+        if org_unit_id:
+            queryset = queryset.filter(org_unit_id=org_unit_id)
+        
+        assessment_period = self.request.query_params.get('assessment_period')
+        if assessment_period:
+            queryset = queryset.filter(assessment_period=assessment_period)
+        
+        start_date = self.request.query_params.get('start_date')
+        if start_date:
+            queryset = queryset.filter(detected_at__date__gte=start_date)
+        
+        end_date = self.request.query_params.get('end_date')
+        if end_date:
+            queryset = queryset.filter(detected_at__date__lte=end_date)
+        
+        return queryset.order_by('-detected_at')
+    
+    def perform_create(self, serializer):
+        """Create conflict resolution with audit logging"""
+        conflict = serializer.save()
+        
+        # Log the conflict detection
+        AuditLog.log_change(
+            action_type=AuditLog.ActionType.CREATE,
+            entity_type=AuditLog.EntityType.DATA_SYNC,
+            entity_id=conflict.id,
+            user=self.request.user,
+            change_reason=AuditLog.ChangeReason.DATA_CORRECTION,
+            change_description=f"Conflict detected: {conflict.conflict_type} for {conflict.entity_type}",
+            is_conflict_resolution=True,
+            conflict_type=conflict.conflict_type,
+            org_unit_id=conflict.org_unit_id,
+            assessment_period=conflict.assessment_period
+        )
+    
+    def perform_update(self, serializer):
+        """Update conflict resolution with audit logging"""
+        old_status = self.get_object().resolution_status
+        conflict = serializer.save()
+        
+        if conflict.resolution_status != old_status:
+            # Log the resolution
+            AuditLog.log_change(
+                action_type=AuditLog.ActionType.UPDATE,
+                entity_type=AuditLog.EntityType.DATA_SYNC,
+                entity_id=conflict.id,
+                user=self.request.user,
+                change_reason=AuditLog.ChangeReason.DATA_CORRECTION,
+                change_description=f"Conflict resolved: {conflict.resolution_method}",
+                is_conflict_resolution=True,
+                conflict_type=conflict.conflict_type,
+                resolution_method=conflict.resolution_method,
+                org_unit_id=conflict.org_unit_id,
+                assessment_period=conflict.assessment_period
+            )
+    
+    @action(detail=False, methods=['get'])
+    def summary(self, request):
+        """Get conflict resolution summary statistics"""
+        queryset = self.get_queryset()
+        
+        summary = {
+            'total_conflicts': queryset.count(),
+            'conflict_types': {},
+            'resolution_statuses': {},
+            'resolution_methods': {},
+            'pending_conflicts': queryset.filter(resolution_status=ConflictResolution.ResolutionStatus.PENDING).count(),
+            'resolved_conflicts': queryset.filter(resolution_status=ConflictResolution.ResolutionStatus.RESOLVED).count(),
+            'escalated_conflicts': queryset.filter(resolution_status=ConflictResolution.ResolutionStatus.ESCALATED).count()
+        }
+        
+        # Conflict type distribution
+        for conflict_type, _ in ConflictResolution.ConflictType.choices:
+            summary['conflict_types'][conflict_type] = queryset.filter(conflict_type=conflict_type).count()
+        
+        # Resolution status distribution
+        for status, _ in ConflictResolution.ResolutionStatus.choices:
+            summary['resolution_statuses'][status] = queryset.filter(resolution_status=status).count()
+        
+        # Resolution method distribution
+        for method, _ in ConflictResolution.ResolutionMethod.choices:
+            summary['resolution_methods'][method] = queryset.filter(resolution_method=method).count()
+        
+        return Response(summary)
+    
+    @action(detail=True, methods=['post'])
+    def resolve(self, request, pk=None):
+        """Resolve a specific conflict"""
+        conflict = self.get_object()
+        
+        serializer = ConflictResolutionUpdateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        
+        # Resolve the conflict
+        conflict.resolution_method = serializer.validated_data.get('resolution_method', conflict.resolution_method)
+        conflict.resolution_status = ConflictResolution.ResolutionStatus.RESOLVED
+        conflict.resolution_notes = serializer.validated_data.get('resolution_notes', '')
+        conflict.resolved_by = request.user
+        conflict.resolved_at = timezone.now()
+        conflict.save()
+        
+        # Log the resolution
+        AuditLog.log_change(
+            action_type=AuditLog.ActionType.UPDATE,
+            entity_type=AuditLog.EntityType.DATA_SYNC,
+            entity_id=conflict.id,
+            user=request.user,
+            change_reason=AuditLog.ChangeReason.DATA_CORRECTION,
+            change_description=f"Conflict resolved: {conflict.resolution_method}",
+            is_conflict_resolution=True,
+            conflict_type=conflict.conflict_type,
+            resolution_method=conflict.resolution_method,
+            org_unit_id=conflict.org_unit_id,
+            assessment_period=conflict.assessment_period
+        )
+        
+        return Response({
+            'status': 'success',
+            'message': 'Conflict resolved successfully',
+            'conflict': ConflictResolutionSerializer(conflict).data
+        })
+
+
+class ManualOverrideViewSet(viewsets.ViewSet):
+    """
+    ViewSet for handling manual overrides
+    """
+    permission_classes = [IsAuthenticated]
+    
+    @action(detail=False, methods=['post'])
+    def apply_override(self, request):
+        """Apply a manual override to an indicator score"""
+        serializer = ManualOverrideSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        
+        data = serializer.validated_data
+        
+        try:
+            with transaction.atomic():
+                # Find the indicator score
+                indicator_score = IndicatorScore.objects.get(id=data['entity_id'])
+                
+                # Apply the manual override
+                indicator_score.apply_manual_override(
+                    new_score=data['score'],
+                    user=request.user,
+                    reason=data['reason']
+                )
+                
+                return Response({
+                    'status': 'success',
+                    'message': 'Manual override applied successfully',
+                    'indicator_score': IndicatorScoreSerializer(indicator_score).data
+                })
+                
+        except IndicatorScore.DoesNotExist:
+            return Response({
+                'status': 'error',
+                'message': 'Indicator score not found'
+            }, status=status.HTTP_404_NOT_FOUND)
+        except Exception as e:
+            logger.error(f"Error applying manual override: {str(e)}")
+            return Response({
+                'status': 'error',
+                'message': 'Failed to apply manual override'
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+    
+    @action(detail=False, methods=['post'])
+    def clear_override(self, request):
+        """Clear a manual override from an indicator score"""
+        entity_id = request.data.get('entity_id')
+        reason = request.data.get('reason', '')
+        
+        if not entity_id:
+            return Response({
+                'status': 'error',
+                'message': 'Entity ID is required'
+            }, status=status.HTTP_400_BAD_REQUEST)
+        
+        try:
+            with transaction.atomic():
+                # Find the indicator score
+                indicator_score = IndicatorScore.objects.get(id=entity_id)
+                
+                # Clear the manual override
+                indicator_score.clear_manual_override(
+                    user=request.user,
+                    reason=reason
+                )
+                
+                return Response({
+                    'status': 'success',
+                    'message': 'Manual override cleared successfully',
+                    'indicator_score': IndicatorScoreSerializer(indicator_score).data
+                })
+                
+        except IndicatorScore.DoesNotExist:
+            return Response({
+                'status': 'error',
+                'message': 'Indicator score not found'
+            }, status=status.HTTP_404_NOT_FOUND)
+        except Exception as e:
+            logger.error(f"Error clearing manual override: {str(e)}")
+            return Response({
+                'status': 'error',
+                'message': 'Failed to clear manual override'
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)

@@ -8,10 +8,11 @@ from django.db.models import Count, Sum
 from django.utils import timezone
 
 from .models import (
-    Objective, ScoringRule, WeightingScheme, ObjectiveWeight, 
+    Milestone, Objective, ScoringRule, WeightingScheme, ObjectiveWeight, 
     IndicatorWeight, AssessmentPeriod, SystemConfiguration
 )
 from .serializers import (
+    MilestoneSerializer, MilestoneCreateSerializer,
     ObjectiveSerializer, ObjectiveCreateSerializer,
     ScoringRuleSerializer, ScoringRuleCreateSerializer,
     WeightingSchemeSerializer, WeightingSchemeCreateSerializer,
@@ -23,6 +24,124 @@ from .serializers import (
     ConfigurationValidationSerializer, ConfigurationSummarySerializer
 )
 from indicators.models import TrackedIndicator
+
+
+class MilestoneViewSet(viewsets.ModelViewSet):
+    """
+    ViewSet for managing milestones
+    """
+    queryset = Milestone.objects.all()
+    permission_classes = [IsAuthenticated]
+    filter_backends = [DjangoFilterBackend, filters.SearchFilter, filters.OrderingFilter]
+    filterset_fields = ['is_active', 'score']
+    search_fields = ['name', 'description', 'code']
+    ordering_fields = ['name', 'order', 'created_at']
+    ordering = ['order', 'name']
+    
+    def get_serializer_class(self):
+        """Return appropriate serializer class based on action"""
+        if self.action == 'create':
+            return MilestoneCreateSerializer
+        return MilestoneSerializer
+    
+    @action(detail=True, methods=['patch'])
+    def update_score(self, request, pk=None):
+        """
+        Update the score of a milestone for a specific assessment
+        """
+        milestone = self.get_object()
+        score = request.data.get('score')
+        org_unit_id = request.data.get('org_unit_id')
+        assessment_period_id = request.data.get('assessment_period_id')
+        
+        if score is None:
+            return Response(
+                {'error': 'Score is required'}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        if not org_unit_id:
+            return Response(
+                {'error': 'org_unit_id is required'}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        if not assessment_period_id:
+            return Response(
+                {'error': 'assessment_period_id is required'}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        try:
+            score = int(score)
+            if score < -2 or score > 2:
+                return Response(
+                    {'error': 'Score must be between -2 and 2'}, 
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+        except (ValueError, TypeError):
+            return Response(
+                {'error': 'Score must be a valid integer'}, 
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Get or create the milestone score for this assessment
+        from assessments.models import MilestoneScore
+        from .models import AssessmentPeriod
+        
+        try:
+            assessment_period = AssessmentPeriod.objects.get(id=assessment_period_id)
+        except AssessmentPeriod.DoesNotExist:
+            return Response(
+                {'error': 'Assessment period not found'}, 
+                status=status.HTTP_404_NOT_FOUND
+            )
+        
+        milestone_score, created = MilestoneScore.objects.get_or_create(
+            milestone=milestone,
+            org_unit_id=org_unit_id,
+            assessment_period=assessment_period,
+            defaults={
+                'objective': milestone.objective_set.first(),
+                'org_unit_name': request.data.get('org_unit_name', ''),
+                'score': score,
+                'override_user': request.user if hasattr(request, 'user') else None
+            }
+        )
+        
+        if not created:
+            # Update existing milestone score
+            milestone_score.update_score(score, request.user if hasattr(request, 'user') else None)
+        else:
+            # Set the objective for newly created milestone score
+            if milestone.objective_set.exists():
+                milestone_score.objective = milestone.objective_set.first()
+                milestone_score.save()
+        
+        return Response({
+            'id': milestone_score.id,
+            'milestone_id': milestone.id,
+            'milestone_name': milestone.name,
+            'score': milestone_score.score,
+            'score_color': milestone_score.score_color,
+            'score_label': milestone_score.score_label,
+            'message': 'Milestone score updated successfully'
+        })
+    
+    @action(detail=True, methods=['post'])
+    def toggle_active(self, request, pk=None):
+        """
+        Toggle the active status of a milestone
+        """
+        milestone = self.get_object()
+        milestone.is_active = not milestone.is_active
+        milestone.save()
+        
+        return Response({
+            'success': True,
+            'message': f'Milestone {"activated" if milestone.is_active else "deactivated"} successfully',
+            'is_active': milestone.is_active
+        })
 
 
 class ObjectiveViewSet(viewsets.ModelViewSet):

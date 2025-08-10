@@ -6,6 +6,7 @@ app_name = 'configurations'
 
 # Create router and register viewsets
 router = DefaultRouter()
+router.register(r'milestones', views.MilestoneViewSet, basename='milestone')
 router.register(r'objectives', views.ObjectiveViewSet, basename='objective')
 router.register(r'scoring-rules', views.ScoringRuleViewSet, basename='scoring-rule')
 router.register(r'weighting-schemes', views.WeightingSchemeViewSet, basename='weighting-scheme')

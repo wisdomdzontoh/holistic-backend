@@ -9,6 +9,9 @@ router.register(r'indicator-scores', views.IndicatorScoreViewSet)
 router.register(r'objective-scores', views.ObjectiveScoreViewSet)
 router.register(r'sector-scores', views.SectorScoreViewSet)
 router.register(r'holistic-assessment', views.HolisticAssessmentViewSet, basename='holistic-assessment')
+router.register(r'audit-logs', views.AuditLogViewSet, basename='audit-logs')
+router.register(r'conflict-resolutions', views.ConflictResolutionViewSet, basename='conflict-resolutions')
+router.register(r'manual-overrides', views.ManualOverrideViewSet, basename='manual-overrides')
 
 urlpatterns = [
     path('', include(router.urls)),
@@ -20,6 +23,18 @@ urlpatterns = [
         path('get_assessment/<str:pk>/', views.HolisticAssessmentViewSet.as_view({'get': 'get_assessment'}), name='holistic-get-assessment'),
         path('update_assessment/<str:pk>/', views.HolisticAssessmentViewSet.as_view({'put': 'update_assessment'}), name='holistic-update-assessment'),
         path('delete_assessment/<str:pk>/', views.HolisticAssessmentViewSet.as_view({'delete': 'delete_assessment'}), name='holistic-delete-assessment'),
+    ])),
+    
+    # Audit and conflict resolution endpoints
+    path('audit/', include([
+        path('logs/', views.AuditLogViewSet.as_view({'get': 'list'}), name='audit-logs-list'),
+        path('logs/summary/', views.AuditLogViewSet.as_view({'get': 'summary'}), name='audit-logs-summary'),
+        path('logs/export/', views.AuditLogViewSet.as_view({'post': 'export'}), name='audit-logs-export'),
+        path('conflicts/', views.ConflictResolutionViewSet.as_view({'get': 'list', 'post': 'create'}), name='conflict-resolutions-list'),
+        path('conflicts/summary/', views.ConflictResolutionViewSet.as_view({'get': 'summary'}), name='conflict-resolutions-summary'),
+        path('conflicts/<str:pk>/resolve/', views.ConflictResolutionViewSet.as_view({'post': 'resolve'}), name='conflict-resolve'),
+        path('overrides/apply/', views.ManualOverrideViewSet.as_view({'post': 'apply_override'}), name='manual-override-apply'),
+        path('overrides/clear/', views.ManualOverrideViewSet.as_view({'post': 'clear_override'}), name='manual-override-clear'),
     ])),
     
     path('dashboard/', include([

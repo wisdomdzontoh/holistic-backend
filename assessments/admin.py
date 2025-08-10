@@ -1,8 +1,11 @@
 from django.contrib import admin
 from django.utils.html import format_html
+from django.urls import reverse
+from django.utils.safestring import mark_safe
 from django.utils import timezone
 from .models import (
-    DataSyncLog, IndicatorData, IndicatorScore, ObjectiveScore, SectorScore, SavedAssessment
+    DataSyncLog, IndicatorData, IndicatorScore, ObjectiveScore, 
+    SectorScore, SavedAssessment, AuditLog, ConflictResolution
 )
 
 
@@ -348,3 +351,181 @@ class SavedAssessmentAdmin(admin.ModelAdmin):
     def assessment_type(self, obj):
         return obj.assessment_type
     assessment_type.short_description = 'Assessment Type'
+
+
+@admin.register(AuditLog)
+class AuditLogAdmin(admin.ModelAdmin):
+    """
+    Admin interface for audit logs
+    """
+    list_display = [
+        'id', 'action_type', 'entity_type', 'entity_id', 'user', 
+        'change_reason', 'created_at', 'org_unit_name', 'assessment_period'
+    ]
+    list_filter = [
+        'action_type', 'entity_type', 'change_reason', 'is_conflict_resolution',
+        'created_at', 'org_unit_id'
+    ]
+    search_fields = [
+        'entity_id', 'user__username', 'user__email', 'org_unit_name',
+        'change_description', 'indicator_id', 'objective_id'
+    ]
+    readonly_fields = [
+        'created_at', 'old_values', 'new_values', 'changed_fields',
+        'session_key', 'ip_address', 'user_agent'
+    ]
+    ordering = ['-created_at']
+    
+    fieldsets = (
+        ('Audit Information', {
+            'fields': ('action_type', 'entity_type', 'entity_id', 'change_reason')
+        }),
+        ('User Information', {
+            'fields': ('user', 'session_key', 'ip_address', 'user_agent')
+        }),
+        ('Change Details', {
+            'fields': ('change_description', 'old_values', 'new_values', 'changed_fields')
+        }),
+        ('Context', {
+            'fields': ('org_unit_id', 'org_unit_name', 'assessment_period', 'indicator_id', 'objective_id')
+        }),
+        ('Conflict Resolution', {
+            'fields': ('is_conflict_resolution', 'conflict_type', 'resolution_method'),
+            'classes': ('collapse',)
+        }),
+        ('Timestamps', {
+            'fields': ('created_at',),
+            'classes': ('collapse',)
+        }),
+    )
+    
+    def has_add_permission(self, request):
+        """Audit logs should not be manually created"""
+        return False
+    
+    def has_change_permission(self, request, obj=None):
+        """Audit logs should not be modified"""
+        return False
+    
+    def has_delete_permission(self, request, obj=None):
+        """Audit logs should not be deleted"""
+        return False
+    
+    actions = ['export_audit_logs']
+    
+    def export_audit_logs(self, request, queryset):
+        """Export selected audit logs to CSV"""
+        import csv
+        from django.http import HttpResponse
+        
+        response = HttpResponse(content_type='text/csv')
+        response['Content-Disposition'] = 'attachment; filename="audit_logs.csv"'
+        
+        writer = csv.writer(response)
+        writer.writerow([
+            'ID', 'Action Type', 'Entity Type', 'Entity ID', 'User', 
+            'Change Reason', 'Description', 'Org Unit', 'Assessment Period',
+            'Created At', 'Old Values', 'New Values', 'Changed Fields'
+        ])
+        
+        for log in queryset:
+            writer.writerow([
+                log.id, log.action_type, log.entity_type, log.entity_id,
+                log.user.username if log.user else 'System',
+                log.change_reason, log.change_description, log.org_unit_name,
+                log.assessment_period, log.created_at,
+                str(log.old_values), str(log.new_values), str(log.changed_fields)
+            ])
+        
+        return response
+    export_audit_logs.short_description = "Export selected audit logs to CSV"
+
+
+@admin.register(ConflictResolution)
+class ConflictResolutionAdmin(admin.ModelAdmin):
+    """
+    Admin interface for conflict resolutions
+    """
+    list_display = [
+        'id', 'conflict_type', 'entity_type', 'entity_id', 'resolution_status',
+        'resolution_method', 'resolved_by', 'detected_at'
+    ]
+    list_filter = [
+        'conflict_type', 'entity_type', 'resolution_status', 'resolution_method',
+        'detected_at', 'resolved_at', 'org_unit_id'
+    ]
+    search_fields = [
+        'entity_id', 'resolved_by__username', 'org_unit_name', 
+        'resolution_notes', 'assessment_period'
+    ]
+    readonly_fields = [
+        'detected_at', 'manual_data', 'dhis2_data', 'conflict_fields'
+    ]
+    ordering = ['-detected_at']
+    
+    fieldsets = (
+        ('Conflict Information', {
+            'fields': ('conflict_type', 'entity_type', 'entity_id')
+        }),
+        ('Data Involved', {
+            'fields': ('manual_data', 'dhis2_data', 'conflict_fields')
+        }),
+        ('Resolution', {
+            'fields': ('resolution_method', 'resolution_status', 'resolved_by', 'resolution_notes')
+        }),
+        ('Context', {
+            'fields': ('org_unit_id', 'org_unit_name', 'assessment_period')
+        }),
+        ('Timestamps', {
+            'fields': ('detected_at', 'resolved_at'),
+            'classes': ('collapse',)
+        }),
+    )
+    
+    actions = ['mark_as_resolved', 'escalate_conflicts', 'export_conflicts']
+    
+    def mark_as_resolved(self, request, queryset):
+        """Mark selected conflicts as resolved"""
+        updated = queryset.update(
+            resolution_status=ConflictResolution.ResolutionStatus.RESOLVED,
+            resolved_at=timezone.now(),
+            resolved_by=request.user
+        )
+        self.message_user(request, f"{updated} conflicts marked as resolved.")
+    mark_as_resolved.short_description = "Mark selected conflicts as resolved"
+    
+    def escalate_conflicts(self, request, queryset):
+        """Escalate selected conflicts to admin"""
+        updated = queryset.update(
+            resolution_status=ConflictResolution.ResolutionStatus.ESCALATED,
+            resolution_method=ConflictResolution.ResolutionMethod.ESCALATE
+        )
+        self.message_user(request, f"{updated} conflicts escalated to admin.")
+    escalate_conflicts.short_description = "Escalate selected conflicts to admin"
+    
+    def export_conflicts(self, request, queryset):
+        """Export selected conflicts to CSV"""
+        import csv
+        from django.http import HttpResponse
+        
+        response = HttpResponse(content_type='text/csv')
+        response['Content-Disposition'] = 'attachment; filename="conflict_resolutions.csv"'
+        
+        writer = csv.writer(response)
+        writer.writerow([
+            'ID', 'Conflict Type', 'Entity Type', 'Entity ID', 'Resolution Status',
+            'Resolution Method', 'Resolved By', 'Org Unit', 'Assessment Period',
+            'Detected At', 'Resolved At', 'Notes'
+        ])
+        
+        for conflict in queryset:
+            writer.writerow([
+                conflict.id, conflict.conflict_type, conflict.entity_type, conflict.entity_id,
+                conflict.resolution_status, conflict.resolution_method,
+                conflict.resolved_by.username if conflict.resolved_by else 'Unresolved',
+                conflict.org_unit_name, conflict.assessment_period,
+                conflict.detected_at, conflict.resolved_at, conflict.resolution_notes
+            ])
+        
+        return response
+    export_conflicts.short_description = "Export selected conflicts to CSV"

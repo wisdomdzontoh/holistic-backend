@@ -6,8 +6,222 @@ from decimal import Decimal
 import json
 
 from indicators.models import TrackedIndicator
-from configurations.models import Objective, AssessmentPeriod, ScoringRule
+from configurations.models import Objective, AssessmentPeriod, ScoringRule, Milestone
 from dhis2_auth.models import DHIS2User
+
+
+class AuditLog(models.Model):
+    """
+    Model to track all changes and manual overrides for audit purposes
+    """
+    class ActionType(models.TextChoices):
+        CREATE = 'create', _('Create')
+        UPDATE = 'update', _('Update')
+        DELETE = 'delete', _('Delete')
+        MANUAL_OVERRIDE = 'manual_override', _('Manual Override')
+        DHIS2_SYNC = 'dhis2_sync', _('DHIS2 Sync')
+        SCORE_CALCULATION = 'score_calculation', _('Score Calculation')
+        ASSESSMENT_SAVE = 'assessment_save', _('Assessment Save')
+        ASSESSMENT_UPDATE = 'assessment_update', _('Assessment Update')
+        ASSESSMENT_DELETE = 'assessment_delete', _('Assessment Delete')
+    
+    class EntityType(models.TextChoices):
+        INDICATOR_DATA = 'indicator_data', _('Indicator Data')
+        INDICATOR_SCORE = 'indicator_score', _('Indicator Score')
+        OBJECTIVE_SCORE = 'objective_score', _('Objective Score')
+        SECTOR_SCORE = 'sector_score', _('Sector Score')
+        SAVED_ASSESSMENT = 'saved_assessment', _('Saved Assessment')
+        DATA_SYNC = 'data_sync', _('Data Sync')
+    
+    class ChangeReason(models.TextChoices):
+        MANUAL_ENTRY = 'manual_entry', _('Manual Entry')
+        DHIS2_SYNC = 'dhis2_sync', _('DHIS2 Sync')
+        SCORE_OVERRIDE = 'score_override', _('Score Override')
+        DATA_CORRECTION = 'data_correction', _('Data Correction')
+        SYSTEM_CALCULATION = 'system_calculation', _('System Calculation')
+        USER_REQUEST = 'user_request', _('User Request')
+    
+    # Audit metadata
+    action_type = models.CharField(max_length=20, choices=ActionType.choices)
+    entity_type = models.CharField(max_length=20, choices=EntityType.choices)
+    entity_id = models.CharField(max_length=255, help_text="ID of the affected entity")
+    
+    # User and session info
+    user = models.ForeignKey(
+        DHIS2User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='audit_logs'
+    )
+    session_key = models.CharField(max_length=255, blank=True)
+    ip_address = models.GenericIPAddressField(null=True, blank=True)
+    user_agent = models.TextField(blank=True)
+    
+    # Change details
+    change_reason = models.CharField(
+        max_length=20,
+        choices=ChangeReason.choices,
+        default=ChangeReason.USER_REQUEST
+    )
+    change_description = models.TextField(blank=True)
+    
+    # Data changes
+    old_values = models.JSONField(default=dict, blank=True)
+    new_values = models.JSONField(default=dict, blank=True)
+    changed_fields = models.JSONField(default=list, blank=True)
+    
+    # Context
+    org_unit_id = models.CharField(max_length=255, blank=True)
+    org_unit_name = models.CharField(max_length=255, blank=True)
+    assessment_period = models.CharField(max_length=50, blank=True)
+    indicator_id = models.CharField(max_length=255, blank=True)
+    objective_id = models.CharField(max_length=255, blank=True)
+    
+    # Conflict resolution
+    is_conflict_resolution = models.BooleanField(default=False)
+    conflict_type = models.CharField(max_length=50, blank=True)
+    resolution_method = models.CharField(max_length=50, blank=True)
+    
+    # Timestamps
+    created_at = models.DateTimeField(auto_now_add=True)
+    
+    class Meta:
+        db_table = 'audit_logs'
+        verbose_name = 'Audit Log'
+        verbose_name_plural = 'Audit Logs'
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['action_type', 'created_at']),
+            models.Index(fields=['entity_type', 'entity_id']),
+            models.Index(fields=['user', 'created_at']),
+            models.Index(fields=['org_unit_id', 'assessment_period']),
+            models.Index(fields=['is_conflict_resolution', 'created_at']),
+        ]
+    
+    def __str__(self):
+        return f"{self.action_type} - {self.entity_type} ({self.entity_id}) by {self.user}"
+    
+    @classmethod
+    def log_change(cls, action_type, entity_type, entity_id, user=None, **kwargs):
+        """
+        Create an audit log entry for a change
+        """
+        return cls.objects.create(
+            action_type=action_type,
+            entity_type=entity_type,
+            entity_id=str(entity_id),
+            user=user,
+            **kwargs
+        )
+    
+    @classmethod
+    def log_manual_override(cls, entity_type, entity_id, user, old_values, new_values, 
+                          change_reason=ChangeReason.SCORE_OVERRIDE, **kwargs):
+        """
+        Create an audit log entry for a manual override
+        """
+        changed_fields = []
+        for key in new_values:
+            if key in old_values and old_values[key] != new_values[key]:
+                changed_fields.append(key)
+        
+        return cls.objects.create(
+            action_type=cls.ActionType.MANUAL_OVERRIDE,
+            entity_type=entity_type,
+            entity_id=str(entity_id),
+            user=user,
+            change_reason=change_reason,
+            old_values=old_values,
+            new_values=new_values,
+            changed_fields=changed_fields,
+            **kwargs
+        )
+
+
+class ConflictResolution(models.Model):
+    """
+    Model to track conflict resolution between manual overrides and DHIS2 sync
+    """
+    class ConflictType(models.TextChoices):
+        DATA_CONFLICT = 'data_conflict', _('Data Conflict')
+        SCORE_CONFLICT = 'score_conflict', _('Score Conflict')
+        TIMESTAMP_CONFLICT = 'timestamp_conflict', _('Timestamp Conflict')
+        USER_CONFLICT = 'user_conflict', _('User Conflict')
+    
+    class ResolutionMethod(models.TextChoices):
+        MANUAL_WINS = 'manual_wins', _('Manual Override Wins')
+        DHIS2_WINS = 'dhis2_wins', _('DHIS2 Data Wins')
+        MERGE = 'merge', _('Merge Data')
+        KEEP_BOTH = 'keep_both', _('Keep Both Versions')
+        ESCALATE = 'escalate', _('Escalate to Admin')
+    
+    class ResolutionStatus(models.TextChoices):
+        PENDING = 'pending', _('Pending')
+        RESOLVED = 'resolved', _('Resolved')
+        ESCALATED = 'escalated', _('Escalated')
+        IGNORED = 'ignored', _('Ignored')
+    
+    # Conflict details
+    conflict_type = models.CharField(max_length=20, choices=ConflictType.choices)
+    entity_type = models.CharField(max_length=20, choices=AuditLog.EntityType.choices)
+    entity_id = models.CharField(max_length=255)
+    
+    # Data involved
+    manual_data = models.JSONField(default=dict)
+    dhis2_data = models.JSONField(default=dict)
+    conflict_fields = models.JSONField(default=list)
+    
+    # Resolution
+    resolution_method = models.CharField(
+        max_length=20,
+        choices=ResolutionMethod.choices,
+        default=ResolutionMethod.MANUAL_WINS
+    )
+    resolution_status = models.CharField(
+        max_length=20,
+        choices=ResolutionStatus.choices,
+        default=ResolutionStatus.PENDING
+    )
+    resolved_by = models.ForeignKey(
+        DHIS2User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='resolved_conflicts'
+    )
+    resolution_notes = models.TextField(blank=True)
+    
+    # Context
+    org_unit_id = models.CharField(max_length=255, blank=True)
+    assessment_period = models.CharField(max_length=50, blank=True)
+    
+    # Timestamps
+    detected_at = models.DateTimeField(auto_now_add=True)
+    resolved_at = models.DateTimeField(null=True, blank=True)
+    
+    class Meta:
+        db_table = 'conflict_resolutions'
+        verbose_name = 'Conflict Resolution'
+        verbose_name_plural = 'Conflict Resolutions'
+        ordering = ['-detected_at']
+        indexes = [
+            models.Index(fields=['conflict_type', 'resolution_status']),
+            models.Index(fields=['entity_type', 'entity_id']),
+            models.Index(fields=['org_unit_id', 'assessment_period']),
+        ]
+    
+    def __str__(self):
+        return f"{self.conflict_type} - {self.entity_type} ({self.entity_id})"
+    
+    def resolve(self, method, resolved_by, notes=""):
+        """Mark conflict as resolved"""
+        self.resolution_method = method
+        self.resolution_status = self.ResolutionStatus.RESOLVED
+        self.resolved_by = resolved_by
+        self.resolution_notes = notes
+        self.resolved_at = timezone.now()
+        self.save()
 
 
 class DataSyncLog(models.Model):
@@ -91,6 +305,18 @@ class DataSyncLog(models.Model):
             self.duration_seconds = int((self.completed_at - self.started_at).total_seconds())
         
         self.save()
+        
+        # Log the sync completion
+        AuditLog.log_change(
+            action_type=AuditLog.ActionType.DHIS2_SYNC,
+            entity_type=AuditLog.EntityType.DATA_SYNC,
+            entity_id=self.id,
+            user=self.dhis2_user,
+            change_reason=AuditLog.ChangeReason.DHIS2_SYNC,
+            change_description=f"DHIS2 sync completed: {self.successful_indicators} successful, {self.failed_indicators} failed",
+            org_unit_id=",".join(self.org_unit_ids) if self.org_unit_ids else "",
+            assessment_period=f"{self.period_start} to {self.period_end}" if self.period_start and self.period_end else ""
+        )
     
     def mark_failed(self, error_message="", error_details=None):
         """Mark sync as failed"""
@@ -318,6 +544,17 @@ class IndicatorScore(models.Model):
         if self.is_manual_override:
             return  # Don't recalculate manual overrides
         
+        # Store old values for audit
+        old_score = self.score
+        old_values = {
+            'score': old_score,
+            'score_color': self.score_color,
+            'score_label': self.score_label,
+            'target_gap': float(self.target_gap) if self.target_gap else None,
+            'percent_change': float(self.percent_change) if self.percent_change else None,
+            'last_calculated': self.last_calculated.isoformat() if self.last_calculated else None
+        }
+        
         # Determine which metric to use for scoring
         if self.indicator.target_value is not None:
             # Use target gap
@@ -368,6 +605,135 @@ class IndicatorScore(models.Model):
         
         self.last_calculated = timezone.now()
         self.save()
+        
+        # Log the score calculation
+        new_values = {
+            'score': self.score,
+            'score_color': self.score_color,
+            'score_label': self.score_label,
+            'target_gap': float(self.target_gap) if self.target_gap else None,
+            'percent_change': float(self.percent_change) if self.percent_change else None,
+            'last_calculated': self.last_calculated.isoformat()
+        }
+        
+        AuditLog.log_change(
+            action_type=AuditLog.ActionType.SCORE_CALCULATION,
+            entity_type=AuditLog.EntityType.INDICATOR_SCORE,
+            entity_id=self.id,
+            user=self.override_user if self.is_manual_override else None,
+            change_reason=AuditLog.ChangeReason.SYSTEM_CALCULATION if not self.is_manual_override else AuditLog.ChangeReason.SCORE_OVERRIDE,
+            change_description=f"Score calculated for {self.indicator.name}",
+            old_values=old_values,
+            new_values=new_values,
+            org_unit_id=self.org_unit_id,
+            org_unit_name=self.org_unit_name,
+            assessment_period=self.assessment_period.name if self.assessment_period else "",
+            indicator_id=str(self.indicator.id),
+            objective_id=str(self.objective.id)
+        )
+    
+    def apply_manual_override(self, new_score, user, reason=""):
+        """
+        Apply a manual override to the score with audit logging
+        """
+        # Store old values for audit
+        old_values = {
+            'score': self.score,
+            'score_color': self.score_color,
+            'score_label': self.score_label,
+            'is_manual_override': self.is_manual_override,
+            'override_reason': self.override_reason,
+            'override_user': str(self.override_user.id) if self.override_user else None
+        }
+        
+        # Apply the override
+        self.score = new_score
+        self.is_manual_override = True
+        self.override_reason = reason
+        self.override_user = user
+        self.last_calculated = timezone.now()
+        
+        # Update score metadata
+        self.score_color = self.get_score_color(new_score)
+        self.score_label = self.get_score_label(new_score)
+        
+        self.save()
+        
+        # Log the manual override
+        new_values = {
+            'score': self.score,
+            'score_color': self.score_color,
+            'score_label': self.score_label,
+            'is_manual_override': self.is_manual_override,
+            'override_reason': self.override_reason,
+            'override_user': str(self.override_user.id) if self.override_user else None
+        }
+        
+        AuditLog.log_manual_override(
+            entity_type=AuditLog.EntityType.INDICATOR_SCORE,
+            entity_id=self.id,
+            user=user,
+            old_values=old_values,
+            new_values=new_values,
+            change_reason=AuditLog.ChangeReason.SCORE_OVERRIDE,
+            change_description=f"Manual override applied to {self.indicator.name}: {reason}",
+            org_unit_id=self.org_unit_id,
+            org_unit_name=self.org_unit_name,
+            assessment_period=self.assessment_period.name if self.assessment_period else "",
+            indicator_id=str(self.indicator.id),
+            objective_id=str(self.objective.id)
+        )
+    
+    def clear_manual_override(self, user, reason=""):
+        """
+        Clear a manual override and recalculate the score
+        """
+        if not self.is_manual_override:
+            return
+        
+        # Store old values for audit
+        old_values = {
+            'score': self.score,
+            'score_color': self.score_color,
+            'score_label': self.score_label,
+            'is_manual_override': self.is_manual_override,
+            'override_reason': self.override_reason,
+            'override_user': str(self.override_user.id) if self.override_user else None
+        }
+        
+        # Clear the override
+        self.is_manual_override = False
+        self.override_reason = ""
+        self.override_user = None
+        
+        # Recalculate the score
+        self.calculate_score()
+        
+        # Log the override clearance
+        new_values = {
+            'score': self.score,
+            'score_color': self.score_color,
+            'score_label': self.score_label,
+            'is_manual_override': self.is_manual_override,
+            'override_reason': self.override_reason,
+            'override_user': None
+        }
+        
+        AuditLog.log_change(
+            action_type=AuditLog.ActionType.UPDATE,
+            entity_type=AuditLog.EntityType.INDICATOR_SCORE,
+            entity_id=self.id,
+            user=user,
+            change_reason=AuditLog.ChangeReason.DATA_CORRECTION,
+            change_description=f"Manual override cleared for {self.indicator.name}: {reason}",
+            old_values=old_values,
+            new_values=new_values,
+            org_unit_id=self.org_unit_id,
+            org_unit_name=self.org_unit_name,
+            assessment_period=self.assessment_period.name if self.assessment_period else "",
+            indicator_id=str(self.indicator.id),
+            objective_id=str(self.objective.id)
+        )
 
 
 class ObjectiveScore(models.Model):
@@ -500,6 +866,121 @@ class ObjectiveScore(models.Model):
         
         self.last_calculated = timezone.now()
         self.save()
+
+
+class MilestoneScore(models.Model):
+    """
+    Model to store milestone scores for assessments
+    """
+    milestone = models.ForeignKey(
+        Milestone,
+        on_delete=models.CASCADE,
+        related_name='scores'
+    )
+    objective = models.ForeignKey(
+        Objective,
+        on_delete=models.CASCADE,
+        related_name='milestone_scores'
+    )
+    
+    # Assessment context
+    org_unit_id = models.CharField(max_length=255, db_index=True)
+    org_unit_name = models.CharField(max_length=255, blank=True)
+    assessment_period = models.ForeignKey(
+        AssessmentPeriod,
+        on_delete=models.CASCADE,
+        related_name='milestone_scores'
+    )
+    
+    # Score data
+    score = models.IntegerField(
+        validators=[MinValueValidator(-2), MaxValueValidator(2)],
+        null=True,
+        blank=True,
+        help_text="Manual score for this milestone (-2 to +2)"
+    )
+    score_color = models.CharField(max_length=7, blank=True)
+    score_label = models.CharField(max_length=50, blank=True)
+    
+    # User notes
+    notes = models.TextField(blank=True, help_text="User notes about this milestone score")
+    
+    # Status
+    is_manual_override = models.BooleanField(default=True, help_text="Milestone scores are always manual")
+    override_reason = models.TextField(blank=True)
+    override_user = models.ForeignKey(
+        DHIS2User,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='milestone_score_overrides'
+    )
+    
+    # Timestamps
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    last_calculated = models.DateTimeField(auto_now_add=True)
+    
+    class Meta:
+        db_table = 'milestone_scores'
+        verbose_name = 'Milestone Score'
+        verbose_name_plural = 'Milestone Scores'
+        unique_together = ['milestone', 'org_unit_id', 'assessment_period']
+        ordering = ['objective__order', 'milestone__order']
+        indexes = [
+            models.Index(fields=['org_unit_id', 'assessment_period']),
+            models.Index(fields=['objective', 'org_unit_id']),
+            models.Index(fields=['milestone', 'org_unit_id']),
+            models.Index(fields=['created_at']),
+        ]
+    
+    def __str__(self):
+        return f"{self.milestone.name} - {self.org_unit_name} ({self.assessment_period.name})"
+    
+    def update_score(self, new_score, user, reason=""):
+        """
+        Update the milestone score
+        """
+        old_score = self.score
+        
+        # Update score
+        self.score = new_score
+        
+        # Set color and label based on score
+        if self.score is not None:
+            if self.score >= 1:
+                self.score_color = '#28a745'  # Green
+                self.score_label = 'Highly Performing'
+            elif self.score >= 0:
+                self.score_color = '#ffc107'  # Yellow
+                self.score_label = 'Sustained'
+            elif self.score >= -1:
+                self.score_color = '#fd7e14'  # Orange
+                self.score_label = 'Underperforming'
+            else:
+                self.score_color = '#dc3545'  # Red
+                self.score_label = 'Severely Underperforming'
+        
+        # Update metadata
+        self.override_reason = reason
+        self.override_user = user
+        self.last_calculated = timezone.now()
+        self.save()
+        
+        # Log the change
+        AuditLog.log_manual_override(
+            entity_type=AuditLog.EntityType.INDICATOR_SCORE,
+            entity_id=f"milestone_{self.id}",
+            user=user,
+            old_values={'score': old_score},
+            new_values={'score': new_score},
+            change_reason=AuditLog.ChangeReason.SCORE_OVERRIDE,
+            change_description=f"Milestone score updated from {old_score} to {new_score}",
+            org_unit_id=self.org_unit_id,
+            org_unit_name=self.org_unit_name,
+            assessment_period=self.assessment_period.name,
+            objective_id=self.objective.id
+        )
 
 
 class SectorScore(models.Model):

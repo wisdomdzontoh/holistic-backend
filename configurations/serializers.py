@@ -1,9 +1,27 @@
 from rest_framework import serializers
 from .models import (
-    Objective, ScoringRule, WeightingScheme, ObjectiveWeight, 
+    Milestone, Objective, ScoringRule, WeightingScheme, ObjectiveWeight, 
     IndicatorWeight, AssessmentPeriod, SystemConfiguration
 )
 from indicators.models import TrackedIndicator
+
+
+class MilestoneSerializer(serializers.ModelSerializer):
+    """
+    Serializer for milestones
+    """
+    objective_count = serializers.SerializerMethodField()
+    
+    class Meta:
+        model = Milestone
+        fields = [
+            'id', 'name', 'description', 'score', 'code', 'order', 'is_active',
+            'color', 'created_at', 'updated_at', 'objective_count'
+        ]
+        read_only_fields = ['created_at', 'updated_at']
+    
+    def get_objective_count(self, obj):
+        return obj.objectives.count()
 
 
 class ObjectiveSerializer(serializers.ModelSerializer):
@@ -12,12 +30,13 @@ class ObjectiveSerializer(serializers.ModelSerializer):
     """
     total_weight = serializers.SerializerMethodField()
     indicator_count = serializers.SerializerMethodField()
+    milestone = MilestoneSerializer(read_only=True)
     
     class Meta:
         model = Objective
         fields = [
             'id', 'name', 'description', 'code', 'order', 'is_active',
-            'color', 'created_at', 'updated_at', 'total_weight', 'indicator_count'
+            'color', 'milestone', 'created_at', 'updated_at', 'total_weight', 'indicator_count'
         ]
         read_only_fields = ['created_at', 'updated_at']
     
@@ -176,6 +195,23 @@ class SystemConfigurationSerializer(serializers.ModelSerializer):
 
 
 # Create/Update serializers
+class MilestoneCreateSerializer(serializers.ModelSerializer):
+    """
+    Serializer for creating milestones
+    """
+    class Meta:
+        model = Milestone
+        fields = [
+            'name', 'description', 'score', 'code', 'order', 'is_active', 'color'
+        ]
+    
+    def validate_code(self, value):
+        """Validate milestone code format"""
+        if not value.isalnum():
+            raise serializers.ValidationError("Code must contain only letters and numbers")
+        return value.upper()
+
+
 class ObjectiveCreateSerializer(serializers.ModelSerializer):
     """
     Serializer for creating objectives
@@ -183,7 +219,7 @@ class ObjectiveCreateSerializer(serializers.ModelSerializer):
     class Meta:
         model = Objective
         fields = [
-            'name', 'description', 'code', 'order', 'is_active', 'color'
+            'name', 'description', 'code', 'order', 'is_active', 'color', 'milestone'
         ]
     
     def validate_code(self, value):

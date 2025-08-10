@@ -10,6 +10,11 @@ class Milestone(models.Model):
     """
     name = models.CharField(max_length=255, help_text="Milestone name (e.g., 'MS 1.1')")
     description = models.TextField(blank=True, help_text="Detailed description of the milestone")
+    score = models.IntegerField(
+        validators=[MinValueValidator(-2), MaxValueValidator(2)],
+        default=-2,
+        help_text="Manual score for this milestone (-2 to +2)"
+    )
     code = models.CharField(max_length=50, unique=True, help_text="Short code for the milestone (e.g., 'MS1.1')")
     order = models.PositiveIntegerField(default=0, help_text="Display order within objective")
     is_active = models.BooleanField(default=True, help_text="Whether this milestone is active")
