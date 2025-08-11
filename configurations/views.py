@@ -97,25 +97,30 @@ class MilestoneViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_404_NOT_FOUND
             )
         
+        # Get the actual DHIS2User instance from the wrapper
+        dhis2_user = None
+        if hasattr(request, 'user') and hasattr(request.user, 'dhis2_user'):
+            dhis2_user = request.user.dhis2_user
+        
         milestone_score, created = MilestoneScore.objects.get_or_create(
             milestone=milestone,
             org_unit_id=org_unit_id,
             assessment_period=assessment_period,
             defaults={
-                'objective': milestone.objective_set.first(),
+                'objective': milestone.objectives.first(),
                 'org_unit_name': request.data.get('org_unit_name', ''),
                 'score': score,
-                'override_user': request.user if hasattr(request, 'user') else None
+                'override_user': dhis2_user
             }
         )
         
         if not created:
             # Update existing milestone score
-            milestone_score.update_score(score, request.user if hasattr(request, 'user') else None)
+            milestone_score.update_score(score, dhis2_user)
         else:
             # Set the objective for newly created milestone score
-            if milestone.objective_set.exists():
-                milestone_score.objective = milestone.objective_set.first()
+            if milestone.objectives.exists():
+                milestone_score.objective = milestone.objectives.first()
                 milestone_score.save()
         
         return Response({

@@ -648,3 +648,87 @@ class ConflictResolutionFilterSerializer(serializers.Serializer):
         required=False,
         help_text="Filter by end date"
     )
+
+
+class ManualDataUpdateSerializer(serializers.Serializer):
+    """
+    Serializer for manual data updates
+    """
+    indicator_id = serializers.IntegerField(
+        required=True,
+        help_text="ID of the indicator"
+    )
+    org_unit_id = serializers.CharField(
+        max_length=255,
+        required=True,
+        help_text="Organization unit ID"
+    )
+    assessment_period_id = serializers.IntegerField(
+        required=True,
+        help_text="Assessment period ID"
+    )
+    data_updates = serializers.DictField(
+        required=True,
+        help_text="Dictionary containing updates for current_value, previous_value, target_value, percent_change, target_gap, score"
+    )
+    
+    def validate_data_updates(self, value):
+        """Validate the data updates dictionary"""
+        allowed_fields = ['current_value', 'previous_value', 'target_value', 'percent_change', 'target_gap', 'score']
+        
+        for field in value.keys():
+            if field not in allowed_fields:
+                raise serializers.ValidationError(f"Field '{field}' is not allowed. Allowed fields: {allowed_fields}")
+        
+        # Validate score if provided
+        if 'score' in value:
+            try:
+                score = int(value['score'])
+                if not (-5 <= score <= 5):
+                    raise serializers.ValidationError("Score must be between -5 and 5")
+            except (ValueError, TypeError):
+                raise serializers.ValidationError("Score must be a valid integer")
+        
+        return value
+
+
+class BulkManualDataUpdateSerializer(serializers.Serializer):
+    """
+    Serializer for bulk manual data updates
+    """
+    updates = ManualDataUpdateSerializer(
+        many=True,
+        required=True,
+        help_text="List of manual data updates"
+    )
+
+
+class ManualScoreOverrideSerializer(serializers.Serializer):
+    """
+    Serializer for manual score overrides
+    """
+    indicator_id = serializers.IntegerField(
+        required=True,
+        help_text="ID of the indicator"
+    )
+    org_unit_id = serializers.CharField(
+        max_length=255,
+        required=True,
+        help_text="Organization unit ID"
+    )
+    assessment_period_id = serializers.IntegerField(
+        required=True,
+        help_text="Assessment period ID"
+    )
+    score = serializers.IntegerField(
+        min_value=-5,
+        max_value=5,
+        required=True,
+        help_text="Manual score value (-5 to 5)"
+    )
+    reason = serializers.CharField(
+        max_length=500,
+        required=False,
+        default="Manual score override",
+        help_text="Reason for the override"
+    )

@@ -27,7 +27,7 @@ from configurations.models import (
 from organisation.services import AccessControlService
 from .models import (
     DataSyncLog, IndicatorData, IndicatorScore, 
-    ObjectiveScore, SectorScore
+    ObjectiveScore, SectorScore, AuditLog
 )
 
 logger = logging.getLogger(__name__)
@@ -193,9 +193,9 @@ class RealTimeDHIS2Service:
 
         orange_fill = PatternFill('solid', fgColor='FDBA74')  # approx #fd7e14 light
         yellow_fill = PatternFill('solid', fgColor='FFF3BF')  # light yellow
-        green50 = PatternFill('solid', fgColor='E8F5E9')
-        yellow50 = PatternFill('solid', fgColor='FFFDE7')
-        red50 = PatternFill('solid', fgColor='FFEBEE')
+        green50 = PatternFill('solid', fgColor='E8F5E9')  # Light green for positive change
+        yellow50 = PatternFill('solid', fgColor='FFFDE7')  # Light yellow for neutral change
+        red50 = PatternFill('solid', fgColor='FFEBEE')   # Light red for negative change/gap
 
         def score_fill(score: float | None):
             if score is None:
@@ -223,7 +223,7 @@ class RealTimeDHIS2Service:
                     break
 
         # Header row
-        headers = ['#', 'Indicator'] + periods + ['Change', 'P-T Gap Analysis', 'Target', 'Assessed score (-2,-1,0,+1,+2)', 'Remarks']
+        headers = ['#', 'Indicator'] + periods + ['Change', 'P-T Gap Analysis', 'Target', 'Assessed score (-2, -1, 0, +1, +2)', 'Remarks']
         ws.append(headers)
         for idx, _ in enumerate(headers, start=1):
             cell = ws.cell(row=1, column=idx)
@@ -234,7 +234,9 @@ class RealTimeDHIS2Service:
         ws.row_dimensions[1].height = 22
 
         row = 2
-        for obj in data.get('objectives', []):
+        # Sort objectives by order to match frontend
+        sorted_objectives = sorted(data.get('objectives', []), key=lambda x: x.get('order', 0))
+        for obj in sorted_objectives:
             # Objective row
             ws.append([None] * len(headers))
             for c in range(1, len(headers) + 1):
@@ -245,8 +247,9 @@ class RealTimeDHIS2Service:
             ws.cell(row=row, column=2, value=obj.get('name')).alignment = left
             row += 1
 
-            # Indicator rows
-            for ind in obj.get('indicators', []):
+            # Indicator rows - sort by display_order to match frontend
+            sorted_indicators = sorted(obj.get('indicators', []), key=lambda x: x.get('display_order', 0))
+            for ind in sorted_indicators:
                 row_values = []
                 row_values.append(ind.get('indicator_number'))
                 row_values.append(ind.get('name'))
@@ -254,12 +257,32 @@ class RealTimeDHIS2Service:
                 for p in periods:
                     v = ind.get('data_values', {}).get(p, {}).get('value')
                     row_values.append(v)
-                # change/gap
+                # change/gap - format with % symbol
                 sc = ind.get('score') or {}
-                row_values.append(sc.get('percent_change'))
-                row_values.append(sc.get('target_gap'))
+                percent_change = sc.get('percent_change')
+                target_gap = sc.get('target_gap')
+                
+                # Format percentage values with proper handling of None and zero values
+                if percent_change is not None and percent_change != 0:
+                    row_values.append(f"{percent_change:.1f}%")
+                elif percent_change == 0:
+                    row_values.append("0.0%")
+                else:
+                    row_values.append('')
+                    
+                if target_gap is not None and target_gap != 0:
+                    row_values.append(f"{target_gap:.1f}%")
+                elif target_gap == 0:
+                    row_values.append("0.0%")
+                else:
+                    row_values.append('')
                 row_values.append(ind.get('target_value'))
-                row_values.append((sc.get('score') if sc.get('score') is not None else None))
+                # Ensure score is properly displayed
+                score_value = sc.get('score')
+                if score_value is not None:
+                    row_values.append(score_value)
+                else:
+                    row_values.append('')
                 row_values.append('')  # remarks
                 ws.append(row_values)
 
@@ -279,7 +302,8 @@ class RealTimeDHIS2Service:
                 # Change bg (col after periods)
                 change_col = 2 + len(periods) + 1
                 gap_col = change_col + 1
-                # set fills
+                
+                # Apply colors based on numeric values (matching frontend logic)
                 change_val = sc.get('percent_change')
                 if isinstance(change_val, (int, float)):
                     if change_val > 5:
@@ -288,57 +312,68 @@ class RealTimeDHIS2Service:
                         ws.cell(row=row, column=change_col).fill = red50
                     else:
                         ws.cell(row=row, column=change_col).fill = yellow50
+                
                 gap_val = sc.get('target_gap')
                 if isinstance(gap_val, (int, float)):
                     abs_gap = abs(gap_val)
-                    ws.cell(row=row, column=gap_col).fill = green50 if abs_gap <= 10 else (yellow50 if abs_gap <= 40 else red50)
+                    if abs_gap <= 10:
+                        ws.cell(row=row, column=gap_col).fill = green50
+                    elif abs_gap <= 40:
+                        ws.cell(row=row, column=gap_col).fill = yellow50
+                    else:
+                        ws.cell(row=row, column=gap_col).fill = red50
 
                 # Score color
                 score_col = gap_col + 2
                 s = sc.get('score')
-                fill = score_fill(s)
-                if fill:
-                    ws.cell(row=row, column=score_col).fill = fill
-                    ws.cell(row=row, column=score_col).font = Font(color='FFFFFF', bold=True)
+                if s is not None:
+                    fill = score_fill(s)
+                    if fill:
+                        ws.cell(row=row, column=score_col).fill = fill
+                        ws.cell(row=row, column=score_col).font = Font(color='FFFFFF', bold=True)
 
                 row += 1
 
             # Milestone row
-            ws.append(['MS', obj.get('milestone', {}).get('name') if isinstance(obj.get('milestone'), dict) else obj.get('milestone')] + ['-'] * (len(headers) - 2))
-            for c in range(1, len(headers) + 1):
-                cell = ws.cell(row=row, column=c)
-                cell.fill = yellow_fill
-                cell.border = border
-                cell.alignment = center if c != 2 else left
-            row += 1
+            milestone = obj.get('milestone')
+            if milestone:
+                milestone_name = milestone.get('name') if isinstance(milestone, dict) else str(milestone)
+                milestone_score = milestone.get('score') if isinstance(milestone, dict) else None
+                
+                # Create milestone row with proper score
+                milestone_row = ['MS', milestone_name]
+                # Add empty values for periods
+                milestone_row.extend(['-'] * len(periods))
+                # Add empty values for change, gap, target
+                milestone_row.extend(['-', '-', '-'])
+                # Add milestone score
+                milestone_row.append(milestone_score if milestone_score is not None else '-')
+                # Add empty remarks
+                milestone_row.append('')
+                
+                ws.append(milestone_row)
+                
+                # Style milestone row
+                for c in range(1, len(headers) + 1):
+                    cell = ws.cell(row=row, column=c)
+                    cell.fill = yellow_fill
+                    cell.border = border
+                    cell.alignment = center if c != 2 else left
+                
+                # Apply score color to milestone score cell
+                if milestone_score is not None:
+                    score_col = 2 + len(periods) + 4  # Score column position
+                    fill = score_fill(milestone_score)
+                    if fill:
+                        ws.cell(row=row, column=score_col).fill = fill
+                        ws.cell(row=row, column=score_col).font = Font(color='FFFFFF', bold=True)
+                
+                row += 1
 
         last_row = row - 1
 
-        # Conditional formatting rules
-        try:
-            # Change column: >5 green, between -5..5 yellow, < -5 red
-            ch_letter = get_column_letter(2 + len(periods) + 1)
-            ch_range = f"{ch_letter}2:{ch_letter}{last_row}"
-            ws.conditional_formatting.add(ch_range, FormulaRule(formula=[f"{ch_letter}2>5"], fill=green50))
-            ws.conditional_formatting.add(ch_range, FormulaRule(formula=[f"AND({ch_letter}2>=-5,{ch_letter}2<=5)"], fill=yellow50))
-            ws.conditional_formatting.add(ch_range, FormulaRule(formula=[f"{ch_letter}2<-5"], fill=red50))
-
-            # Gap column: ABS<=10 green, <=40 yellow, >40 red
-            gp_letter = get_column_letter(2 + len(periods) + 2)
-            gp_range = f"{gp_letter}2:{gp_letter}{last_row}"
-            ws.conditional_formatting.add(gp_range, FormulaRule(formula=[f"ABS({gp_letter}2)<=10"], fill=green50))
-            ws.conditional_formatting.add(gp_range, FormulaRule(formula=[f"AND(ABS({gp_letter}2)>10,ABS({gp_letter}2)<=40)"], fill=yellow50))
-            ws.conditional_formatting.add(gp_range, FormulaRule(formula=[f"ABS({gp_letter}2)>40"], fill=red50))
-
-            # Score column: >=1 green, 0..1 yellow, -1..0 orange, < -1 red
-            sc_letter = get_column_letter(2 + len(periods) + 4)
-            sc_range = f"{sc_letter}2:{sc_letter}{last_row}"
-            ws.conditional_formatting.add(sc_range, FormulaRule(formula=[f"{sc_letter}2>=1"], fill=PatternFill('solid', fgColor='28A745')))
-            ws.conditional_formatting.add(sc_range, FormulaRule(formula=[f"AND({sc_letter}2>=0,{sc_letter}2<1)"], fill=PatternFill('solid', fgColor='FFC107')))
-            ws.conditional_formatting.add(sc_range, FormulaRule(formula=[f"AND({sc_letter}2>=-1,{sc_letter}2<0)"], fill=PatternFill('solid', fgColor='FD7E14')))
-            ws.conditional_formatting.add(sc_range, FormulaRule(formula=[f"{sc_letter}2<-1"], fill=PatternFill('solid', fgColor='DC3545')))
-        except Exception as e:
-            logger.warning(f"Conditional formatting setup failed: {e}")
+        # Note: Direct cell fills are already applied above, so conditional formatting is not needed
+        # This ensures colors are preserved in the exported file
 
         # Autosize basic columns
         ws.column_dimensions['A'].width = 6
@@ -363,7 +398,7 @@ class RealTimeDHIS2Service:
             ws_sum.append(['Sector Label', sec.get('score_label')])
             ws_sum.append([])
             ws_sum.append(['Objective', 'Final Score', 'Label'])
-            for obj in data.get('objectives', []):
+            for obj in sorted_objectives:
                 sc = obj.get('score') or {}
                 ws_sum.append([obj.get('name'), sc.get('final_score'), sc.get('score_label')])
         except Exception as e:
@@ -373,8 +408,9 @@ class RealTimeDHIS2Service:
         try:
             ws_raw = wb.create_sheet('Raw Data')
             ws_raw.append(['Objective', 'Indicator', *periods, 'Target'])
-            for obj in data.get('objectives', []):
-                for ind in obj.get('indicators', []):
+            for obj in sorted_objectives:
+                sorted_indicators = sorted(obj.get('indicators', []), key=lambda x: x.get('display_order', 0))
+                for ind in sorted_indicators:
                     row_vals = [obj.get('name'), ind.get('name')]
                     for p in periods:
                         row_vals.append(ind.get('data_values', {}).get(p, {}).get('value'))
@@ -514,9 +550,21 @@ class RealTimeDHIS2Service:
                         'name': objective.name,
                         'code': objective.code,
                         'color': objective.color,
-                        'milestone': objective.milestone.name if objective.milestone else None,
+                        'milestone': None,
                         'indicators': []
                     }
+                    
+                    # Add milestone information if it exists
+                    if objective.milestone:
+                        objective_data['milestone'] = {
+                            'id': objective.milestone.id,
+                            'name': objective.milestone.name,
+                            'code': objective.milestone.code,
+                            'color': objective.milestone.color,
+                            'score': -2,  # Default score for real-time data
+                            'score_color': '#dc3545',
+                            'score_label': 'Severely Underperforming'
+                        }
                     
                     # Assign indicators to this objective
                     start_idx = i * indicators_per_objective
@@ -650,9 +698,21 @@ class RealTimeDHIS2Service:
                         'name': objective.name,
                         'code': objective.code,
                         'color': objective.color,
-                        'milestone': objective.milestone.name if objective.milestone else None,
+                        'milestone': None,
                         'indicators': []
                     }
+                    
+                    # Add milestone information if it exists
+                    if objective.milestone:
+                        objective_data['milestone'] = {
+                            'id': objective.milestone.id,
+                            'name': objective.milestone.name,
+                            'code': objective.milestone.code,
+                            'color': objective.milestone.color,
+                            'score': -2,  # Default score for real-time data
+                            'score_color': '#dc3545',
+                            'score_label': 'Severely Underperforming'
+                        }
                     
                     # Get indicators for this objective through indicator_weights relationship
                     objective_indicators = []
@@ -3171,3 +3231,341 @@ class DashboardService:
                 return 'declining'
         
         return 'stable' 
+
+class ManualDataEntryService:
+    """
+    Service for handling manual data entry and score computation
+    """
+    
+    def __init__(self):
+        self.logger = logging.getLogger(__name__)
+    
+    def update_manual_indicator_data(self, request, indicator_id, org_unit_id, assessment_period_id, data_updates):
+        """
+        Update manual indicator data and recalculate scores
+        
+        Args:
+            request: Django request object
+            indicator_id: ID of the indicator
+            org_unit_id: Organization unit ID
+            assessment_period_id: Assessment period ID
+            data_updates: Dict containing updates for current_value, previous_value, target_value, 
+                         percent_change, target_gap, score
+        """
+        try:
+            with transaction.atomic():
+                # First, we need to find the objective for this indicator
+                from indicators.models import TrackedIndicator
+                from configurations.models import Objective, AssessmentPeriod
+                
+                try:
+                    indicator = TrackedIndicator.objects.get(id=indicator_id)
+                    assessment_period = AssessmentPeriod.objects.get(id=assessment_period_id)
+                    
+                    # Find the objective for this indicator
+                    objective = None
+                    for obj in Objective.objects.filter(is_active=True):
+                        if obj.indicator_weights.filter(indicator=indicator).exists():
+                            objective = obj
+                            break
+                    
+                    # If no objective found, use the first available objective
+                    if not objective:
+                        objective = Objective.objects.filter(is_active=True).first()
+                    
+                    if not objective:
+                        raise ValidationError(f"No objectives found for indicator {indicator_id}")
+                    
+                    # Get or create the indicator score record with the objective
+                    indicator_score, created = IndicatorScore.objects.get_or_create(
+                        indicator_id=indicator_id,
+                        org_unit_id=org_unit_id,
+                        assessment_period_id=assessment_period_id,
+                        defaults={
+                            'objective': objective,
+                            'current_value': None,
+                            'previous_value': None,
+                            'target_value': indicator.target_value,
+                            'percent_change': None,
+                            'target_gap': None,
+                            'score': None,
+                            'score_color': '#6c757d',
+                            'score_label': 'N/A',
+                            'is_manual_override': False,
+                            'weight': 1.0,
+                            'org_unit_name': org_unit_id
+                        }
+                    )
+                    
+                    # If this is a new record, we need to set up any additional information
+                    if created:
+                        # The record is already created with the basic info above
+                        pass
+                        
+                except TrackedIndicator.DoesNotExist:
+                    raise ValidationError(f"Indicator {indicator_id} not found")
+                except AssessmentPeriod.DoesNotExist:
+                    raise ValidationError(f"Assessment period {assessment_period_id} not found")
+                except Exception as e:
+                    self.logger.error(f"Error setting up indicator score record: {e}")
+                    raise ValidationError(f"Error setting up indicator score record: {str(e)}")
+                
+
+                
+                # Get the actual DHIS2User instance from the wrapper
+                dhis2_user = None
+                if hasattr(request, 'user') and hasattr(request.user, 'dhis2_user'):
+                    dhis2_user = request.user.dhis2_user
+                
+                # Store old values for audit
+                old_values = {
+                    'current_value': float(indicator_score.current_value) if indicator_score.current_value else None,
+                    'previous_value': float(indicator_score.previous_value) if indicator_score.previous_value else None,
+                    'target_value': float(indicator_score.target_value) if indicator_score.target_value else None,
+                    'percent_change': float(indicator_score.percent_change) if indicator_score.percent_change else None,
+                    'target_gap': float(indicator_score.target_gap) if indicator_score.target_gap else None,
+                    'score': indicator_score.score,
+                    'score_color': indicator_score.score_color,
+                    'score_label': indicator_score.score_label,
+                    'is_manual_override': indicator_score.is_manual_override
+                }
+                
+                # Update data values
+                if 'current_value' in data_updates:
+                    indicator_score.current_value = self._parse_decimal(data_updates['current_value'])
+                
+                if 'previous_value' in data_updates:
+                    indicator_score.previous_value = self._parse_decimal(data_updates['previous_value'])
+                
+                if 'target_value' in data_updates:
+                    indicator_score.target_value = self._parse_decimal(data_updates['target_value'])
+                
+                # Handle manual score override
+                if 'score' in data_updates:
+                    new_score = int(data_updates['score'])
+                    if -5 <= new_score <= 5:
+                        indicator_score.apply_manual_override(
+                            new_score=new_score,
+                            user=dhis2_user,
+                            reason="Manual score entry"
+                        )
+                        # Skip automatic score calculation since it's a manual override
+                        indicator_score.save()
+                        
+                        # Recalculate higher-level scores
+                        self._recalculate_higher_level_scores(indicator_score)
+                        
+                        return {
+                            'success': True,
+                            'message': 'Manual score override applied successfully',
+                            'indicator_score': {
+                                'id': indicator_score.id,
+                                'score': indicator_score.score,
+                                'score_color': indicator_score.score_color,
+                                'score_label': indicator_score.score_label,
+                                'is_manual_override': indicator_score.is_manual_override
+                            }
+                        }
+                
+                # Calculate percent change if both current and previous values are provided
+                if (indicator_score.current_value is not None and 
+                    indicator_score.previous_value is not None and 
+                    indicator_score.previous_value > 0):
+                    
+                    change = ((indicator_score.current_value - indicator_score.previous_value) / 
+                             indicator_score.previous_value) * 100
+                    indicator_score.percent_change = change
+                elif 'percent_change' in data_updates:
+                    # Manual percent change entry
+                    indicator_score.percent_change = self._parse_decimal(data_updates['percent_change'])
+                
+                # Calculate target gap if both current and target values are provided
+                if (indicator_score.current_value is not None and 
+                    indicator_score.target_value is not None and 
+                    indicator_score.target_value > 0):
+                    
+                    gap = abs(indicator_score.current_value - indicator_score.target_value) / indicator_score.target_value * 100
+                    indicator_score.target_gap = gap
+                elif 'target_gap' in data_updates:
+                    # Manual target gap entry
+                    indicator_score.target_gap = self._parse_decimal(data_updates['target_gap'])
+                
+                # Calculate score based on available metrics
+                self._calculate_score_from_metrics(indicator_score)
+                
+                # Save the indicator score
+                indicator_score.save()
+                
+                # Recalculate higher-level scores
+                self._recalculate_higher_level_scores(indicator_score)
+                
+                # Log the change
+                new_values = {
+                    'current_value': float(indicator_score.current_value) if indicator_score.current_value else None,
+                    'previous_value': float(indicator_score.previous_value) if indicator_score.previous_value else None,
+                    'target_value': float(indicator_score.target_value) if indicator_score.target_value else None,
+                    'percent_change': float(indicator_score.percent_change) if indicator_score.percent_change else None,
+                    'target_gap': float(indicator_score.target_gap) if indicator_score.target_gap else None,
+                    'score': indicator_score.score,
+                    'score_color': indicator_score.score_color,
+                    'score_label': indicator_score.score_label,
+                    'is_manual_override': indicator_score.is_manual_override
+                }
+                
+                AuditLog.log_change(
+                    action_type=AuditLog.ActionType.UPDATE,
+                    entity_type=AuditLog.EntityType.INDICATOR_SCORE,
+                    entity_id=str(indicator_score.id),
+                    user=dhis2_user,
+                    change_reason=AuditLog.ChangeReason.MANUAL_ENTRY,
+                    change_description=f"Manual data update for {indicator_score.indicator.name}",
+                    old_values=old_values,
+                    new_values=new_values,
+                    org_unit_id=org_unit_id,
+                    org_unit_name=indicator_score.org_unit_name,
+                    assessment_period=indicator_score.assessment_period.name,
+                    indicator_id=str(indicator_score.indicator.id),
+                    objective_id=str(indicator_score.objective.id)
+                )
+                
+                return {
+                    'success': True,
+                    'message': 'Manual data updated and scores recalculated successfully',
+                    'indicator_score': {
+                        'id': indicator_score.id,
+                        'current_value': float(indicator_score.current_value) if indicator_score.current_value else None,
+                        'previous_value': float(indicator_score.previous_value) if indicator_score.previous_value else None,
+                        'target_value': float(indicator_score.target_value) if indicator_score.target_value else None,
+                        'percent_change': float(indicator_score.percent_change) if indicator_score.percent_change else None,
+                        'target_gap': float(indicator_score.target_gap) if indicator_score.target_gap else None,
+                        'score': indicator_score.score,
+                        'score_color': indicator_score.score_color,
+                        'score_label': indicator_score.score_label,
+                        'is_manual_override': indicator_score.is_manual_override
+                    }
+                }
+                
+        except IndicatorScore.DoesNotExist:
+            raise ValidationError(f"No indicator score found for indicator {indicator_id}")
+        except Exception as e:
+            self.logger.error(f"Error updating manual indicator data: {str(e)}")
+            raise ValidationError(f"Error updating manual data: {str(e)}")
+    
+    def _parse_decimal(self, value):
+        """Parse a value to Decimal, handling None and empty strings"""
+        if value is None or value == '':
+            return None
+        try:
+            return Decimal(str(value))
+        except (ValueError, TypeError):
+            return None
+    
+    def _calculate_score_from_metrics(self, indicator_score):
+        """
+        Calculate score based on available metrics (percent_change or target_gap)
+        """
+        if indicator_score.is_manual_override:
+            return  # Don't recalculate manual overrides
+        
+        # Determine which metric to use for scoring
+        if indicator_score.target_gap is not None:
+            # Use target gap for scoring
+            metric_value = indicator_score.target_gap
+            performance_type = 'gap'
+        elif indicator_score.percent_change is not None:
+            # Use percent change for scoring
+            metric_value = indicator_score.percent_change
+            performance_type = 'change'
+        else:
+            # No metrics available for scoring
+            indicator_score.score = None
+            indicator_score.score_color = '#6c757d'
+            indicator_score.score_label = 'No Data'
+            indicator_score.scoring_rule = None
+            return
+        
+        # Find matching scoring rule
+        matching_rule = None
+        rules = ScoringRule.objects.filter(
+            performance_type=performance_type,
+            is_active=True
+        ).order_by('-priority', 'min_value')
+        
+        for rule in rules:
+            if rule.matches_value(metric_value):
+                matching_rule = rule
+                break
+        
+        # Apply score
+        if matching_rule:
+            indicator_score.score = matching_rule.score
+            indicator_score.score_color = matching_rule.color
+            indicator_score.score_label = matching_rule.label
+            indicator_score.scoring_rule = matching_rule
+        else:
+            indicator_score.score = 0
+            indicator_score.score_color = '#6c757d'
+            indicator_score.score_label = 'No Match'
+            indicator_score.scoring_rule = None
+        
+        indicator_score.last_calculated = timezone.now()
+    
+    def _recalculate_higher_level_scores(self, indicator_score):
+        """
+        Recalculate objective and sector scores after indicator score changes
+        """
+        try:
+            # Recalculate objective score
+            objective_score = ObjectiveScore.objects.filter(
+                objective=indicator_score.objective,
+                org_unit_id=indicator_score.org_unit_id,
+                assessment_period=indicator_score.assessment_period
+            ).first()
+            
+            if objective_score:
+                objective_score.calculate_score()
+            
+            # Recalculate sector score
+            sector_score = SectorScore.objects.filter(
+                org_unit_id=indicator_score.org_unit_id,
+                assessment_period=indicator_score.assessment_period
+            ).first()
+            
+            if sector_score:
+                sector_score.calculate_score()
+                
+        except Exception as e:
+            self.logger.error(f"Error recalculating higher-level scores: {str(e)}")
+    
+    def bulk_update_manual_data(self, request, updates):
+        """
+        Bulk update multiple indicator data entries
+        
+        Args:
+            request: Django request object
+            updates: List of update objects with indicator_id, org_unit_id, assessment_period_id, and data_updates
+        """
+        results = []
+        
+        for update in updates:
+            try:
+                result = self.update_manual_indicator_data(
+                    request=request,
+                    indicator_id=update['indicator_id'],
+                    org_unit_id=update['org_unit_id'],
+                    assessment_period_id=update['assessment_period_id'],
+                    data_updates=update['data_updates']
+                )
+                results.append({
+                    'indicator_id': update['indicator_id'],
+                    'success': True,
+                    'result': result
+                })
+            except Exception as e:
+                results.append({
+                    'indicator_id': update['indicator_id'],
+                    'success': False,
+                    'error': str(e)
+                })
+        
+        return results

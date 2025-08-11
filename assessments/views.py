@@ -25,9 +25,10 @@ from .serializers import (
     AssessmentReportSerializer, HolisticAssessmentRequestSerializer,
     HolisticAssessmentSaveSerializer, AuditLogSerializer, ConflictResolutionSerializer,
     ConflictResolutionCreateSerializer, ConflictResolutionUpdateSerializer,
-    ManualOverrideSerializer, AuditLogFilterSerializer, ConflictResolutionFilterSerializer
+    ManualOverrideSerializer, AuditLogFilterSerializer, ConflictResolutionFilterSerializer,
+    ManualDataUpdateSerializer, BulkManualDataUpdateSerializer, ManualScoreOverrideSerializer
 )
-from .services import DataSyncService, ScoreCalculationService, DashboardService, RealTimeDHIS2Service, AssessmentSaveService
+from .services import DataSyncService, ScoreCalculationService, DashboardService, RealTimeDHIS2Service, AssessmentSaveService, ManualDataEntryService
 from dhis2_auth.session import get_dhis2_user, get_dhis2_user_from_request, get_dhis2_session_data
 from dhis2_auth.dhis_client import DHIS2ClientFactory
 
@@ -1967,4 +1968,162 @@ class ManualOverrideViewSet(viewsets.ViewSet):
             return Response({
                 'status': 'error',
                 'message': 'Failed to clear manual override'
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class ManualDataEntryViewSet(viewsets.ViewSet):
+    """
+    ViewSet for manual data entry and score computation
+    """
+    permission_classes = [IsAuthenticated]
+    
+    def __init__(self, **kwargs):
+        super().__init__(**kwargs)
+        self.manual_data_service = ManualDataEntryService()
+    
+    @action(detail=False, methods=['post'])
+    def update_indicator_data(self, request):
+        """
+        Update manual indicator data and recalculate scores
+        """
+        serializer = ManualDataUpdateSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        
+        try:
+            result = self.manual_data_service.update_manual_indicator_data(
+                request=request,
+                indicator_id=serializer.validated_data['indicator_id'],
+                org_unit_id=serializer.validated_data['org_unit_id'],
+                assessment_period_id=serializer.validated_data['assessment_period_id'],
+                data_updates=serializer.validated_data['data_updates']
+            )
+            
+            return Response(result)
+            
+        except ValidationError as e:
+            return Response({
+                'success': False,
+                'error': str(e)
+            }, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as e:
+            logger.error(f"Error updating manual indicator data: {str(e)}")
+            return Response({
+                'success': False,
+                'error': 'Internal server error'
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+    
+    @action(detail=False, methods=['post'])
+    def bulk_update_data(self, request):
+        """
+        Bulk update multiple indicator data entries
+        """
+        serializer = BulkManualDataUpdateSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        
+        try:
+            results = self.manual_data_service.bulk_update_manual_data(
+                request=request,
+                updates=serializer.validated_data['updates']
+            )
+            
+            return Response({
+                'success': True,
+                'message': f'Processed {len(results)} updates',
+                'results': results
+            })
+            
+        except Exception as e:
+            logger.error(f"Error in bulk manual data update: {str(e)}")
+            return Response({
+                'success': False,
+                'error': 'Internal server error'
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+    
+    @action(detail=False, methods=['post'])
+    def override_score(self, request):
+        """
+        Apply manual score override
+        """
+        serializer = ManualScoreOverrideSerializer(data=request.data)
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+        
+        try:
+            result = self.manual_data_service.update_manual_indicator_data(
+                request=request,
+                indicator_id=serializer.validated_data['indicator_id'],
+                org_unit_id=serializer.validated_data['org_unit_id'],
+                assessment_period_id=serializer.validated_data['assessment_period_id'],
+                data_updates={
+                    'score': serializer.validated_data['score']
+                }
+            )
+            
+            return Response(result)
+            
+        except ValidationError as e:
+            return Response({
+                'success': False,
+                'error': str(e)
+            }, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as e:
+            logger.error(f"Error applying manual score override: {str(e)}")
+            return Response({
+                'success': False,
+                'error': 'Internal server error'
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+    
+    @action(detail=False, methods=['post'])
+    def calculate_scores(self, request):
+        """
+        Trigger score calculation for specific indicators
+        """
+        try:
+            # Get parameters from request
+            indicator_ids = request.data.get('indicator_ids', [])
+            org_unit_id = request.data.get('org_unit_id')
+            assessment_period_id = request.data.get('assessment_period_id')
+            
+            if not indicator_ids or not org_unit_id or not assessment_period_id:
+                return Response({
+                    'success': False,
+                    'error': 'indicator_ids, org_unit_id, and assessment_period_id are required'
+                }, status=status.HTTP_400_BAD_REQUEST)
+            
+            # Calculate scores for each indicator
+            results = []
+            for indicator_id in indicator_ids:
+                try:
+                    result = self.manual_data_service.update_manual_indicator_data(
+                        request=request,
+                        indicator_id=indicator_id,
+                        org_unit_id=org_unit_id,
+                        assessment_period_id=assessment_period_id,
+                        data_updates={}  # Empty updates to trigger recalculation
+                    )
+                    results.append({
+                        'indicator_id': indicator_id,
+                        'success': True,
+                        'result': result
+                    })
+                except Exception as e:
+                    results.append({
+                        'indicator_id': indicator_id,
+                        'success': False,
+                        'error': str(e)
+                    })
+            
+            return Response({
+                'success': True,
+                'message': f'Calculated scores for {len(indicator_ids)} indicators',
+                'results': results
+            })
+            
+        except Exception as e:
+            logger.error(f"Error calculating scores: {str(e)}")
+            return Response({
+                'success': False,
+                'error': 'Internal server error'
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)

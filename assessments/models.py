@@ -654,8 +654,8 @@ class IndicatorScore(models.Model):
         self.last_calculated = timezone.now()
         
         # Update score metadata
-        self.score_color = self.get_score_color(new_score)
-        self.score_label = self.get_score_label(new_score)
+        self.score_color = self._get_score_color(new_score)
+        self.score_label = self._get_score_label(new_score)
         
         self.save()
         
@@ -683,6 +683,40 @@ class IndicatorScore(models.Model):
             indicator_id=str(self.indicator.id),
             objective_id=str(self.objective.id)
         )
+    
+    def _get_score_color(self, score):
+        """Get color for a given score"""
+        if score is None:
+            return '#6c757d'
+        
+        if score == 2:
+            return '#116045'  # Green
+        elif score == 1:
+            return '#2AA63E'  # Light-green
+        elif score >= 0:
+            return '#ffc107'  # Yellow
+        elif score >= -1:
+            return '#FF6467'  # Light-red
+        else:
+            return '#C11007'  # Deep-red
+    
+    def _get_score_label(self, score):
+        """Get label for a given score"""
+        if score is None:
+            return 'No Data'
+        
+        if score == 2:
+            return 'Excellent'
+        elif score == 1:
+            return 'Good'
+        elif score == 0:
+            return 'Satisfactory'
+        elif score == -1:
+            return 'Needs Improvement'
+        elif score == -2:
+            return 'Poor'
+        else:
+            return 'Unknown'
     
     def clear_manual_override(self, user, reason=""):
         """

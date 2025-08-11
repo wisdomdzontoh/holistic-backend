@@ -12,6 +12,7 @@ router.register(r'holistic-assessment', views.HolisticAssessmentViewSet, basenam
 router.register(r'audit-logs', views.AuditLogViewSet, basename='audit-logs')
 router.register(r'conflict-resolutions', views.ConflictResolutionViewSet, basename='conflict-resolutions')
 router.register(r'manual-overrides', views.ManualOverrideViewSet, basename='manual-overrides')
+router.register(r'manual-data-entry', views.ManualDataEntryViewSet, basename='manual-data-entry')
 
 urlpatterns = [
     path('', include(router.urls)),
@@ -35,6 +36,14 @@ urlpatterns = [
         path('conflicts/<str:pk>/resolve/', views.ConflictResolutionViewSet.as_view({'post': 'resolve'}), name='conflict-resolve'),
         path('overrides/apply/', views.ManualOverrideViewSet.as_view({'post': 'apply_override'}), name='manual-override-apply'),
         path('overrides/clear/', views.ManualOverrideViewSet.as_view({'post': 'clear_override'}), name='manual-override-clear'),
+    ])),
+    
+    # Manual data entry endpoints
+    path('manual-data/', include([
+        path('update-indicator/', views.ManualDataEntryViewSet.as_view({'post': 'update_indicator_data'}), name='manual-update-indicator'),
+        path('bulk-update/', views.ManualDataEntryViewSet.as_view({'post': 'bulk_update_data'}), name='manual-bulk-update'),
+        path('override-score/', views.ManualDataEntryViewSet.as_view({'post': 'override_score'}), name='manual-override-score'),
+        path('calculate-scores/', views.ManualDataEntryViewSet.as_view({'post': 'calculate_scores'}), name='manual-calculate-scores'),
     ])),
     
     path('dashboard/', include([
