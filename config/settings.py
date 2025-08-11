@@ -11,6 +11,7 @@ https://docs.djangoproject.com/en/5.2/ref/settings/
 """
 import os
 from pathlib import Path
+from pickle import FALSE
 from dotenv import load_dotenv
 from datetime import timedelta
 
@@ -36,7 +37,7 @@ SECRET_KEY = os.getenv('SECRET_KEY')
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = os.getenv('DEBUG', 'True').lower() == 'true'
 
-ALLOWED_HOSTS = os.getenv('ALLOWED_HOSTS', 'localhost,127.0.0.1,0.0.0.0').split(',')
+ALLOWED_HOSTS = os.getenv('ALLOWED_HOSTS', 'localhost,127.0.0.1,0.0.0.0,holistic-backend-y7gp.onrender.com').split(',')
 
 
 # Application definition
@@ -133,14 +134,16 @@ DATABASES = {
 
 #CORS Settings
 CORS_ALLOW_ALL_ORIGINS = bool(DEBUG)
-CORS_ALLOW_CREDENTIALS = True
+CORS_ALLOW_CREDENTIALS = False
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:3000",
     "http://localhost:3003",
     "http://127.0.0.1:3000",
     "http://127.0.0.1:3003",
+    "https://holistic-assessment.vercel.app",
+    "https://holistic-backend-y7gp.onrender.com"
 ]
-CORS_ALLOWED_CREDENTIALS = True
+#CORS_ALLOWED_CREDENTIALS = False
 
 
 #DRF Settings
