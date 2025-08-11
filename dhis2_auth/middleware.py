@@ -36,8 +36,9 @@ class DHIS2SessionMiddleware:
         
         # Check if DHIS2 session is valid
         if not is_dhis2_authenticated(session_key):
-            # Only clear session for API requests, not for all requests
-            if request.path.startswith('/api/'):
+            # Only clear session for API requests that require authentication
+            # Don't clear session for debug endpoints or public endpoints
+            if request.path.startswith('/api/') and not self._is_public_endpoint(request.path):
                 # Session is invalid, clear it
                 logout_dhis2_user(session_key)
                 request.session.flush()
@@ -79,6 +80,18 @@ class DHIS2SessionMiddleware:
         ]
         
         return any(path.startswith(skip_path) for skip_path in skip_paths)
+    
+    def _is_public_endpoint(self, path):
+        """
+        Check if this is a public endpoint that doesn't require authentication.
+        """
+        public_paths = [
+            '/api/dhis2-auth/debug-session/',
+            '/api/dhis2-auth/test-auth/',
+            '/api/dhis2-auth/health/',
+        ]
+        
+        return any(path.startswith(public_path) for public_path in public_paths)
 
 
 class DHIS2AuthenticationMiddleware:

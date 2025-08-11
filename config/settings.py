@@ -89,6 +89,9 @@ MIDDLEWARE = [
     'dhis2_auth.middleware.DHIS2SessionCleanupMiddleware',
 ]
 
+# Ensure session middleware is properly configured
+SESSION_ENGINE = 'django.contrib.sessions.backends.db'
+
 ROOT_URLCONF = 'config.urls'
 
 TEMPLATES = [
@@ -160,23 +163,24 @@ CORS_ALLOWED_ORIGINS = [
 ]
 
 # Additional CORS settings for cookie handling
-# CORS_ALLOW_HEADERS = [
-#     'accept',
-#     'accept-encoding',
-#     'authorization',
-#     'content-type',
-#     'dnt',
-#     'origin',
-#     'user-agent',
-#     'x-csrftoken',
-#     'x-requested-with',
-# ]
+# Additional CORS settings for cookie handling
+CORS_ALLOW_HEADERS = [
+    'accept',
+    'accept-encoding',
+    'authorization',
+    'content-type',
+    'dnt',
+    'origin',
+    'user-agent',
+    'x-csrftoken',
+    'x-requested-with',
+]
 
-# CORS_EXPOSE_HEADERS = [
-#     'set-cookie',
-#     'access-control-allow-credentials',
-# ]
-#CORS_ALLOWED_CREDENTIALS = False
+CORS_EXPOSE_HEADERS = [
+    'set-cookie',
+    'access-control-allow-credentials',
+]
+CORS_ALLOW_CREDENTIALS = True
 
 
 #DRF Settings
@@ -261,37 +265,41 @@ DEFAULT_DHIS2_URL = os.getenv('DEFAULT_DHIS2_INSTANCE', 'https://dhims.chimgh.or
 
 
 # Session Configuration
-# SESSION_ENGINE = 'django.contrib.sessions.backends.db'
-# SESSION_COOKIE_AGE = 24 * 60 * 60  # 24 hours
-# SESSION_COOKIE_SECURE = not DEBUG  # Set to True in production with HTTPS
-# SESSION_COOKIE_HTTPONLY = True
-# SESSION_COOKIE_SAMESITE = 'None' if not DEBUG else 'Lax'  # None for cross-site in production
-# SESSION_SAVE_EVERY_REQUEST = True  # Save session on every request
-# SESSION_EXPIRE_AT_BROWSER_CLOSE = False  # Keep session alive after browser close
+SESSION_ENGINE = 'django.contrib.sessions.backends.db'
+SESSION_COOKIE_AGE = 24 * 60 * 60  # 24 hours
+SESSION_COOKIE_SECURE = not DEBUG  # Set to True in production with HTTPS
+SESSION_COOKIE_HTTPONLY = True
+SESSION_SAVE_EVERY_REQUEST = True  # Save session on every request
+SESSION_EXPIRE_AT_BROWSER_CLOSE = False  # Keep session alive after browser close
 
-# # Additional session settings for cross-origin
-# if not DEBUG:
-#     SESSION_COOKIE_DOMAIN = None  # Let browser handle domain
-#     SESSION_COOKIE_PATH = '/'
+# Additional session settings for cross-origin
+if not DEBUG:
+    SESSION_COOKIE_DOMAIN = None  # Let browser handle domain
+    SESSION_COOKIE_PATH = '/'
+    # Ensure cookies work in cross-origin requests
+    SESSION_COOKIE_SECURE = True
+    SESSION_COOKIE_SAMESITE = 'None'
+else:
+    SESSION_COOKIE_SAMESITE = 'Lax'
 
-# # Security settings for production
-# if not DEBUG:
-#     # Security middleware settings
-#     SECURE_BROWSER_XSS_FILTER = True
-#     SECURE_CONTENT_TYPE_NOSNIFF = True
-#     SECURE_HSTS_INCLUDE_SUBDOMAINS = True
-#     SECURE_HSTS_SECONDS = 31536000  # 1 year
-#     SECURE_REDIRECT_EXEMPT = []
-#     SECURE_SSL_REDIRECT = True
-#     SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+# Security settings for production
+if not DEBUG:
+    # Security middleware settings
+    SECURE_BROWSER_XSS_FILTER = True
+    SECURE_CONTENT_TYPE_NOSNIFF = True
+    SECURE_HSTS_INCLUDE_SUBDOMAINS = True
+    SECURE_HSTS_SECONDS = 31536000  # 1 year
+    SECURE_REDIRECT_EXEMPT = []
+    SECURE_SSL_REDIRECT = True
+    SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
     
-#     # Additional security headers
-#     SECURE_REFERRER_POLICY = 'strict-origin-when-cross-origin'
+    # Additional security headers
+    SECURE_REFERRER_POLICY = 'strict-origin-when-cross-origin'
 
-# # Cache Configuration (for session caching)
-# CACHES = {
-#     'default': {
-#         'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
-#         'LOCATION': 'unique-snowflake',
-#     }
-# }
+# Cache Configuration (for session caching)
+CACHES = {
+    'default': {
+        'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
+        'LOCATION': 'unique-snowflake',
+    }
+}

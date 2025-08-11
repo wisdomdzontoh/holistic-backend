@@ -538,7 +538,8 @@ def debug_session(request):
         session_key = request.session.session_key
         print(f"DEBUG: Created new session with key: {session_key}")
     
-    return Response({
+    # Set a test cookie to verify cookie handling
+    response = Response({
         'session_key': session_key,
         'has_session': bool(session_key),
         'session_data': session_data,
@@ -551,7 +552,32 @@ def debug_session(request):
         },
         'session_created': request.session.session_key is not None,
         'session_modified': request.session.modified,
+        'test_cookie_set': True,
+        'debug_info': {
+            'DEBUG': settings.DEBUG,
+            'SESSION_COOKIE_SECURE': settings.SESSION_COOKIE_SECURE,
+            'SESSION_COOKIE_SAMESITE': settings.SESSION_COOKIE_SAMESITE,
+            'SESSION_COOKIE_DOMAIN': getattr(settings, 'SESSION_COOKIE_DOMAIN', None),
+            'CORS_ALLOW_CREDENTIALS': getattr(settings, 'CORS_ALLOW_CREDENTIALS', False),
+        },
+        'middleware_info': {
+            'path': request.path,
+            'is_public_endpoint': hasattr(request, '_is_public_endpoint') and request._is_public_endpoint,
+            'should_skip_middleware': hasattr(request, '_should_skip_middleware') and request._should_skip_middleware,
+        }
     })
+    
+    # Set a test cookie to verify cookie handling
+    response.set_cookie(
+        'test_session_cookie',
+        'test_value',
+        max_age=3600,
+        secure=not settings.DEBUG,
+        httponly=True,
+        samesite='None' if not settings.DEBUG else 'Lax'
+    )
+    
+    return response
 
 
 @api_view(['GET'])
@@ -559,9 +585,20 @@ def test_auth(request):
     """
     Test endpoint to verify authentication is working
     """
-    from .session import get_dhis2_user_from_request
+    from .session import get_dhis2_user_from_request, is_dhis2_authenticated
     
+    session_key = request.session.session_key
+    is_authenticated = is_dhis2_authenticated(session_key) if session_key else False
     user = get_dhis2_user_from_request(request)
+    
+    # Debug information
+    debug_info = {
+        'session_key': session_key,
+        'has_session': bool(session_key),
+        'is_dhis2_authenticated': is_authenticated,
+        'cookies_received': dict(request.COOKIES),
+        'user_found': bool(user),
+    }
     
     if user:
         return Response({
@@ -571,10 +608,12 @@ def test_auth(request):
                 'id': user.id,
                 'instance_url': user.dhis2_instance_url,
             },
-            'message': 'Authentication successful'
+            'message': 'Authentication successful',
+            'debug_info': debug_info
         })
     else:
         return Response({
             'authenticated': False,
-            'message': 'Authentication failed - no valid session found'
+            'message': 'Authentication failed - no valid session found',
+            'debug_info': debug_info
         }, status=401)
