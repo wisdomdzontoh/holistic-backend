@@ -51,6 +51,7 @@ urlpatterns = [
         path('quick-actions/', views.DashboardViewSet.as_view({'get': 'quick_actions'}), name='dashboard-quick-actions'),
         path('recent-assessments/', views.DashboardViewSet.as_view({'get': 'recent_assessments'}), name='dashboard-recent-assessments'),
         path('performance-trends/', views.DashboardViewSet.as_view({'get': 'performance_trends'}), name='dashboard-performance-trends'),
+        path('analysis-data/', views.DashboardViewSet.as_view({'get': 'analysis_data'}), name='dashboard-analysis-data'),
     ])),
     path('management/', include([
         path('calculate-scores/', views.AssessmentManagementViewSet.as_view({'post': 'calculate_scores'}), name='calculate-scores'),

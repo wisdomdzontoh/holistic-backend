@@ -2459,19 +2459,92 @@ class DashboardViewSet(viewsets.ViewSet):
             # Extract analysis data from the saved assessment
             calculated_scores = assessment.calculated_scores or {}
             
+            # Debug logging
+            print(f"DEBUG: calculated_scores type: {type(calculated_scores)}")
+            print(f"DEBUG: calculated_scores content: {calculated_scores}")
+            
+            # Handle case where calculated_scores might be a list or other format
+            if not isinstance(calculated_scores, dict):
+                print(f"DEBUG: calculated_scores is not a dict, converting to empty dict")
+                calculated_scores = {}
+            
             # Get objective scores
             objectives_data = []
-            for objective_id, objective_data in calculated_scores.get('objectives', {}).items():
-                if isinstance(objective_data, dict) and 'score' in objective_data:
-                    objectives_data.append({
-                        'id': objective_id,
-                        'name': objective_data.get('name', f'Objective {objective_id}'),
-                        'score': float(objective_data['score']) if objective_data['score'] is not None else 0.0
-                    })
+            objectives_section = calculated_scores.get('objectives', {})
+            
+            # Handle different possible formats for objectives
+            if isinstance(objectives_section, dict):
+                for objective_id, objective_data in objectives_section.items():
+                    if isinstance(objective_data, dict) and 'score' in objective_data:
+                        score_value = objective_data['score']
+                        print(f"DEBUG: Objective {objective_id} score_value type: {type(score_value)}, value: {score_value}")
+                        
+                        # Handle different score formats
+                        try:
+                            if isinstance(score_value, (int, float)):
+                                score = float(score_value)
+                            elif isinstance(score_value, str):
+                                score = float(score_value)
+                            elif isinstance(score_value, dict):
+                                # If score is a dict, try to extract a numeric value
+                                print(f"DEBUG: Score is dict, keys: {score_value.keys()}")
+                                score = float(score_value.get('value', 0.0)) if isinstance(score_value.get('value'), (int, float)) else 0.0
+                            else:
+                                score = 0.0
+                        except (ValueError, TypeError) as e:
+                            print(f"DEBUG: Error converting score: {e}")
+                            score = 0.0
+                        
+                        objectives_data.append({
+                            'id': objective_id,
+                            'name': objective_data.get('name', f'Objective {objective_id}'),
+                            'score': score
+                        })
+            elif isinstance(objectives_section, list):
+                # Handle case where objectives might be a list
+                for i, objective_data in enumerate(objectives_section):
+                    if isinstance(objective_data, dict) and 'score' in objective_data:
+                        score_value = objective_data['score']
+                        # Handle different score formats
+                        try:
+                            if isinstance(score_value, (int, float)):
+                                score = float(score_value)
+                            elif isinstance(score_value, str):
+                                score = float(score_value)
+                            elif isinstance(score_value, dict):
+                                # If score is a dict, try to extract a numeric value
+                                score = float(score_value.get('value', 0.0)) if isinstance(score_value.get('value'), (int, float)) else 0.0
+                            else:
+                                score = 0.0
+                        except (ValueError, TypeError):
+                            score = 0.0
+                        
+                        objectives_data.append({
+                            'id': objective_data.get('id', i),
+                            'name': objective_data.get('name', f'Objective {i}'),
+                            'score': score
+                        })
             
             # Get overall sector score
             sector_score = calculated_scores.get('sector', {})
-            overall_score = float(sector_score.get('overall_score', 0.0)) if sector_score.get('overall_score') is not None else 0.0
+            overall_score = 0.0
+            
+            if isinstance(sector_score, dict):
+                score_value = sector_score.get('overall_score', 0.0)
+                try:
+                    if isinstance(score_value, (int, float)):
+                        overall_score = float(score_value)
+                    elif isinstance(score_value, str):
+                        overall_score = float(score_value)
+                    elif isinstance(score_value, dict):
+                        # If score is a dict, try to extract a numeric value
+                        overall_score = float(score_value.get('value', 0.0)) if isinstance(score_value.get('value'), (int, float)) else 0.0
+                    else:
+                        overall_score = 0.0
+                except (ValueError, TypeError):
+                    overall_score = 0.0
+            else:
+                overall_score = 0.0
             
             # Get objective details from configurations
             from configurations.models import Objective
@@ -2494,6 +2567,16 @@ class DashboardViewSet(viewsets.ViewSet):
                     })
                 else:
                     # If no score data, add with default score
+                    final_objectives.append({
+                        'id': objective.id,
+                        'name': objective.name,
+                        'score': 0.0
+                    })
+            
+            # If no objectives were found with scores, create default ones
+            if not final_objectives:
+                print("DEBUG: No objectives with scores found, creating defaults")
+                for objective in objectives:
                     final_objectives.append({
                         'id': objective.id,
                         'name': objective.name,
