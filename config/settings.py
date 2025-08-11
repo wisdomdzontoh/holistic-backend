@@ -37,7 +37,14 @@ SECRET_KEY = os.getenv('SECRET_KEY')
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = os.getenv('DEBUG', 'True').lower() == 'true'
 
+# ALLOWED_HOSTS configuration
 ALLOWED_HOSTS = os.getenv('ALLOWED_HOSTS', 'localhost,127.0.0.1,0.0.0.0,holistic-backend-y7gp.onrender.com').split(',')
+
+# Ensure the Render domain is always included for production
+if not DEBUG:
+    render_domain = 'holistic-backend-y7gp.onrender.com'
+    if render_domain not in ALLOWED_HOSTS:
+        ALLOWED_HOSTS.append(render_domain)
 
 
 # Application definition
@@ -134,7 +141,7 @@ DATABASES = {
 
 #CORS Settings
 CORS_ALLOW_ALL_ORIGINS = bool(DEBUG)
-CORS_ALLOW_CREDENTIALS = False
+CORS_ALLOW_CREDENTIALS = True
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:3000",
     "http://localhost:3003",
@@ -229,11 +236,25 @@ DEFAULT_DHIS2_URL = os.getenv('DEFAULT_DHIS2_INSTANCE', 'https://dhims.chimgh.or
 # Session Configuration
 SESSION_ENGINE = 'django.contrib.sessions.backends.db'
 SESSION_COOKIE_AGE = 24 * 60 * 60  # 24 hours
-SESSION_COOKIE_SECURE = False  # Set to True in production with HTTPS
+SESSION_COOKIE_SECURE = not DEBUG  # Set to True in production with HTTPS
 SESSION_COOKIE_HTTPONLY = True
 SESSION_COOKIE_SAMESITE = 'Lax'  # Allows cross-site requests for CORS
 SESSION_SAVE_EVERY_REQUEST = True  # Save session on every request
 SESSION_EXPIRE_AT_BROWSER_CLOSE = False  # Keep session alive after browser close
+
+# Security settings for production
+if not DEBUG:
+    # Security middleware settings
+    SECURE_BROWSER_XSS_FILTER = True
+    SECURE_CONTENT_TYPE_NOSNIFF = True
+    SECURE_HSTS_INCLUDE_SUBDOMAINS = True
+    SECURE_HSTS_SECONDS = 31536000  # 1 year
+    SECURE_REDIRECT_EXEMPT = []
+    SECURE_SSL_REDIRECT = True
+    SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+    
+    # Additional security headers
+    SECURE_REFERRER_POLICY = 'strict-origin-when-cross-origin'
 
 # Cache Configuration (for session caching)
 CACHES = {
