@@ -8,6 +8,10 @@ from django.db import transaction
 from django.utils import timezone
 import logging
 from rest_framework.exceptions import ValidationError
+from django.db.models import Count, Avg, Q
+from django.utils import timezone
+from datetime import timedelta
+import json
 
 from .models import (
     DataSyncLog, IndicatorData, IndicatorScore, ObjectiveScore, SectorScore,
@@ -31,6 +35,9 @@ from .serializers import (
 from .services import DataSyncService, ScoreCalculationService, DashboardService, RealTimeDHIS2Service, AssessmentSaveService, ManualDataEntryService
 from dhis2_auth.session import get_dhis2_user, get_dhis2_user_from_request, get_dhis2_session_data
 from dhis2_auth.dhis_client import DHIS2ClientFactory
+from configurations.models import AssessmentPeriod
+from indicators.models import TrackedIndicator
+from configurations.models import Objective
 
 logger = logging.getLogger(__name__)
 
@@ -2127,3 +2134,213 @@ class ManualDataEntryViewSet(viewsets.ViewSet):
                 'success': False,
                 'error': 'Internal server error'
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class DashboardViewSet(viewsets.ViewSet):
+    """
+    Dashboard API endpoints for statistics and overview data
+    """
+    
+    @action(detail=False, methods=['get'])
+    def stats(self, request):
+        """Get dashboard statistics"""
+        try:
+            # Get basic counts
+            total_assessments = SavedAssessment.objects.count()
+            total_facilities = IndicatorScore.objects.values('org_unit_id').distinct().count()
+            total_indicators = TrackedIndicator.objects.filter(is_active=True).count()
+            total_objectives = Objective.objects.filter(is_active=True).count()
+            
+            # Recent assessments (last 30 days)
+            thirty_days_ago = timezone.now() - timedelta(days=30)
+            recent_assessments = SavedAssessment.objects.filter(
+                created_at__gte=thirty_days_ago
+            ).count()
+            
+            # Average sector score
+            sector_scores = SectorScore.objects.filter(
+                overall_score__isnull=False
+            ).values_list('overall_score', flat=True)
+            average_sector_score = float(sum(sector_scores) / len(sector_scores)) if sector_scores else 0.0
+            
+            # Top performing facilities
+            top_facilities = []
+            facility_scores = SectorScore.objects.filter(
+                overall_score__isnull=False
+            ).select_related('assessment_period').order_by('-overall_score')[:5]
+            
+            for score in facility_scores:
+                top_facilities.append({
+                    'id': score.org_unit_id,
+                    'name': score.org_unit_name or score.org_unit_id,
+                    'score': float(score.overall_score),
+                    'score_color': score.score_color,
+                    'score_label': score.score_label
+                })
+            
+            # Recent activity
+            recent_activity = []
+            audit_logs = AuditLog.objects.select_related('user').order_by('-created_at')[:10]
+            
+            for log in audit_logs:
+                activity_type = 'assessment_created'
+                if log.action_type == AuditLog.ActionType.UPDATE:
+                    activity_type = 'assessment_updated'
+                elif log.action_type == AuditLog.ActionType.DHIS2_SYNC:
+                    activity_type = 'data_synced'
+                elif log.action_type == AuditLog.ActionType.SCORE_CALCULATION:
+                    activity_type = 'score_calculated'
+                
+                recent_activity.append({
+                    'id': str(log.id),
+                    'type': activity_type,
+                    'title': f"{log.action_type.replace('_', ' ').title()}",
+                    'description': log.change_description or f"{log.entity_type} {log.entity_id}",
+                    'timestamp': log.created_at.isoformat(),
+                    'user': log.user.username if log.user else 'System'
+                })
+            
+            # Performance summary
+            performance_summary = {
+                'excellent': 0,
+                'satisfactory': 0,
+                'needs_improvement': 0,
+                'underperforming': 0
+            }
+            
+            for score in SectorScore.objects.filter(overall_score__isnull=False):
+                if score.overall_score >= 1.0:
+                    performance_summary['excellent'] += 1
+                elif score.overall_score >= 0.0:
+                    performance_summary['satisfactory'] += 1
+                elif score.overall_score >= -1.0:
+                    performance_summary['needs_improvement'] += 1
+                else:
+                    performance_summary['underperforming'] += 1
+            
+            return Response({
+                'total_assessments': total_assessments,
+                'total_facilities': total_facilities,
+                'total_indicators': total_indicators,
+                'total_objectives': total_objectives,
+                'recent_assessments': recent_assessments,
+                'average_sector_score': round(average_sector_score, 2),
+                'top_performing_facilities': top_facilities,
+                'recent_activity': recent_activity,
+                'performance_summary': performance_summary
+            })
+            
+        except Exception as e:
+            return Response(
+                {'error': f'Failed to fetch dashboard stats: {str(e)}'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+    
+
+    
+    @action(detail=False, methods=['get'])
+    def quick_actions(self, request):
+        """Get quick actions for the dashboard"""
+        try:
+            quick_actions = [
+                {
+                    'id': 'new_assessment',
+                    'title': 'New Assessment',
+                    'description': 'Create a new holistic assessment',
+                    'icon': 'Target',
+                    'href': '/dashboard/assessment',
+                    'color': '#265380'
+                },
+                {
+                    'id': 'data_sync',
+                    'title': 'Sync DHIS2 Data',
+                    'description': 'Fetch latest data from DHIS2',
+                    'icon': 'RefreshCw',
+                    'href': '/dashboard/assessment',
+                    'color': '#28a745'
+                },
+                {
+                    'id': 'view_reports',
+                    'title': 'View Reports',
+                    'description': 'Access assessment reports',
+                    'icon': 'FileText',
+                    'href': '/dashboard/assessment',
+                    'color': '#ffc107'
+                },
+                {
+                    'id': 'manage_indicators',
+                    'title': 'Manage Indicators',
+                    'description': 'Configure assessment indicators',
+                    'icon': 'Settings',
+                    'href': '/dashboard/assessment',
+                    'color': '#dc3545'
+                }
+            ]
+            
+            return Response(quick_actions)
+            
+        except Exception as e:
+            return Response(
+                {'error': f'Failed to fetch quick actions: {str(e)}'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+    
+    @action(detail=False, methods=['get'])
+    def recent_assessments(self, request):
+        """Get recent assessments"""
+        try:
+            limit = int(request.query_params.get('limit', 5))
+            
+            recent_assessments = SavedAssessment.objects.select_related('created_by').order_by('-created_at')[:limit]
+            
+            assessments = []
+            for assessment in recent_assessments:
+                assessments.append({
+                    'id': assessment.id,
+                    'name': assessment.name,
+                    'org_unit_name': assessment.org_unit_name,
+                    'created_by': assessment.created_by.username if assessment.created_by else 'Unknown',
+                    'created_at': assessment.created_at.isoformat(),
+                    'total_indicators': assessment.total_indicators,
+                    'total_objectives': assessment.total_objectives
+                })
+            
+            return Response(assessments)
+            
+        except Exception as e:
+            return Response(
+                {'error': f'Failed to fetch recent assessments: {str(e)}'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+    
+    @action(detail=False, methods=['get'])
+    def performance_trends(self, request):
+        """Get performance trends over time"""
+        try:
+            periods = int(request.query_params.get('periods', 4))
+            
+            # Get sector scores for the last N periods
+            assessment_periods = AssessmentPeriod.objects.order_by('-start_date')[:periods]
+            
+            trends = []
+            for period in assessment_periods:
+                period_scores = SectorScore.objects.filter(
+                    assessment_period=period,
+                    overall_score__isnull=False
+                )
+                
+                if period_scores.exists():
+                    avg_score = period_scores.aggregate(Avg('overall_score'))['overall_score__avg']
+                    trends.append({
+                        'period': period.name,
+                        'average_score': float(avg_score) if avg_score else 0.0,
+                        'facility_count': period_scores.count()
+                    })
+            
+            return Response(trends)
+            
+        except Exception as e:
+            return Response(
+                {'error': f'Failed to fetch performance trends: {str(e)}'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )

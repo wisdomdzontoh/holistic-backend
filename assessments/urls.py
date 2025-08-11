@@ -47,9 +47,10 @@ urlpatterns = [
     ])),
     
     path('dashboard/', include([
-        path('summary/', views.AssessmentDashboardViewSet.as_view({'get': 'summary'}), name='dashboard-summary'),
-        path('objectives/', views.AssessmentDashboardViewSet.as_view({'get': 'objectives'}), name='dashboard-objectives'),
-        path('indicators/', views.AssessmentDashboardViewSet.as_view({'get': 'indicators'}), name='dashboard-indicators'),
+        path('stats/', views.DashboardViewSet.as_view({'get': 'stats'}), name='dashboard-stats'),
+        path('quick-actions/', views.DashboardViewSet.as_view({'get': 'quick_actions'}), name='dashboard-quick-actions'),
+        path('recent-assessments/', views.DashboardViewSet.as_view({'get': 'recent_assessments'}), name='dashboard-recent-assessments'),
+        path('performance-trends/', views.DashboardViewSet.as_view({'get': 'performance_trends'}), name='dashboard-performance-trends'),
     ])),
     path('management/', include([
         path('calculate-scores/', views.AssessmentManagementViewSet.as_view({'post': 'calculate_scores'}), name='calculate-scores'),
