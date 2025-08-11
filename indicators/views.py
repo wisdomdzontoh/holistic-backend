@@ -35,9 +35,7 @@ class TrackedIndicatorViewSet(viewsets.ModelViewSet):
     
     def get_serializer_class(self):
         """Return appropriate serializer class based on action"""
-        if self.action == 'list':
-            return TrackedIndicatorListSerializer
-        elif self.action == 'create':
+        if self.action == 'create':
             return TrackedIndicatorCreateSerializer
         elif self.action in ['update', 'partial_update']:
             return TrackedIndicatorUpdateSerializer
@@ -46,7 +44,7 @@ class TrackedIndicatorViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         """Return filtered queryset"""
         queryset = TrackedIndicator.objects.prefetch_related(
-            'thresholds', 'category_mappings__category'
+            'thresholds', 'category_mappings__category', 'objective_weights'
         )
         
         # Filter by active status if specified

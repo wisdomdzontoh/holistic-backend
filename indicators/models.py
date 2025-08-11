@@ -52,6 +52,34 @@ class TrackedIndicator(models.Model):
         help_text="Optional formula for calculated indicators (e.g., (uid1 / uid2) * 100)"
     )
     
+    # Numerator and denominator for indicator definitions
+    numerator = models.TextField(
+        blank=True,
+        null=True,
+        help_text="Numerator description for the indicator calculation"
+    )
+    denominator = models.TextField(
+        blank=True,
+        null=True,
+        help_text="Denominator description for the indicator calculation"
+    )
+    
+    # Source of data
+    source_of_data = models.CharField(
+        max_length=255,
+        blank=True,
+        null=True,
+        help_text="Source of data for this indicator (e.g., DHIS2, Financial Report, etc.)"
+    )
+    
+    # Target display (text field for formatted targets)
+    target_display = models.CharField(
+        max_length=100,
+        blank=True,
+        null=True,
+        help_text="Formatted target display (e.g., '20-50', '100%', '85.0')"
+    )
+    
     # Target and scoring
     target_value = models.DecimalField(
         max_digits=10,

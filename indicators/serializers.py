@@ -1,5 +1,6 @@
 from rest_framework import serializers
 from .models import TrackedIndicator, IndicatorCategory, IndicatorCategoryMapping, IndicatorThreshold
+from configurations.models import IndicatorWeight
 
 
 class IndicatorThresholdSerializer(serializers.ModelSerializer):
@@ -37,12 +38,24 @@ class IndicatorCategoryMappingSerializer(serializers.ModelSerializer):
         ]
 
 
+class IndicatorObjectiveWeightSerializer(serializers.ModelSerializer):
+    """
+    Serializer for indicator objective weights
+    """
+    class Meta:
+        model = IndicatorWeight
+        fields = [
+            'id', 'objective', 'weight'
+        ]
+
+
 class TrackedIndicatorSerializer(serializers.ModelSerializer):
     """
     Serializer for tracked indicators
     """
     thresholds = IndicatorThresholdSerializer(many=True, read_only=True)
     category_mappings = IndicatorCategoryMappingSerializer(many=True, read_only=True)
+    objective_weights = IndicatorObjectiveWeightSerializer(many=True, read_only=True)
     indicator_type_display = serializers.CharField(source='get_indicator_type_display', read_only=True)
     target_type_display = serializers.CharField(source='get_target_type_display', read_only=True)
     
@@ -50,10 +63,11 @@ class TrackedIndicatorSerializer(serializers.ModelSerializer):
         model = TrackedIndicator
         fields = [
             'id', 'name', 'dhis2_uid', 'indicator_type', 'indicator_type_display',
-            'formula', 'target_value', 'target_type', 'target_type_display',
+            'indicator_number', 'display_order', 'formula', 'numerator', 'denominator',
+            'source_of_data', 'target_value', 'target_display', 'target_type', 'target_type_display',
             'min_score', 'max_score', 'is_active', 'description',
             'dhis2_name', 'dhis2_description', 'created_at', 'updated_at', 'last_sync',
-            'thresholds', 'category_mappings'
+            'thresholds', 'category_mappings', 'objective_weights'
         ]
         read_only_fields = [
             'created_at', 'updated_at', 'last_sync', 'dhis2_name', 'dhis2_description'
@@ -71,7 +85,8 @@ class TrackedIndicatorListSerializer(serializers.ModelSerializer):
         model = TrackedIndicator
         fields = [
             'id', 'name', 'dhis2_uid', 'indicator_type', 'indicator_type_display',
-            'is_active', 'target_value', 'target_type', 'category_count',
+            'indicator_number', 'display_order', 'numerator', 'denominator',
+            'source_of_data', 'is_active', 'target_value', 'target_display', 'target_type', 'category_count',
             'created_at', 'updated_at'
         ]
         read_only_fields = ['created_at', 'updated_at']
@@ -87,8 +102,9 @@ class TrackedIndicatorCreateSerializer(serializers.ModelSerializer):
     class Meta:
         model = TrackedIndicator
         fields = [
-            'name', 'dhis2_uid', 'indicator_type', 'formula', 'target_value',
-            'target_type', 'min_score', 'max_score', 'is_active', 'description'
+            'name', 'dhis2_uid', 'indicator_type', 'indicator_number', 'display_order',
+            'formula', 'numerator', 'denominator', 'source_of_data', 'target_value',
+            'target_display', 'target_type', 'min_score', 'max_score', 'is_active', 'description'
         ]
     
     def validate_dhis2_uid(self, value):
@@ -124,8 +140,9 @@ class TrackedIndicatorUpdateSerializer(serializers.ModelSerializer):
     class Meta:
         model = TrackedIndicator
         fields = [
-            'name', 'indicator_type', 'formula', 'target_value', 'target_type',
-            'min_score', 'max_score', 'is_active', 'description'
+            'name', 'indicator_type', 'indicator_number', 'display_order',
+            'formula', 'numerator', 'denominator', 'source_of_data', 'target_value',
+            'target_display', 'target_type', 'min_score', 'max_score', 'is_active', 'description'
         ]
     
     def validate(self, data):

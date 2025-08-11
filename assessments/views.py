@@ -2423,3 +2423,98 @@ class DashboardViewSet(viewsets.ViewSet):
                 {'error': f'Failed to fetch performance trends: {str(e)}'},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
+
+    @action(detail=False, methods=['get'])
+    def analysis_data(self, request):
+        """Get analysis data for a specific assessment"""
+        try:
+            assessment_id = request.query_params.get('assessment_id')
+            
+            if not assessment_id:
+                return Response(
+                    {'error': 'assessment_id is required'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            
+            # Get the current user
+            current_user = get_dhis2_user_from_request(request)
+            if not current_user:
+                return Response(
+                    {'error': 'User not authenticated'},
+                    status=status.HTTP_401_UNAUTHORIZED
+                )
+            
+            # Get the saved assessment
+            assessment = SavedAssessment.objects.filter(
+                id=assessment_id,
+                created_by=current_user
+            ).first()
+            
+            if not assessment:
+                return Response(
+                    {'error': 'Assessment not found or access denied'},
+                    status=status.HTTP_404_NOT_FOUND
+                )
+            
+            # Extract analysis data from the saved assessment
+            calculated_scores = assessment.calculated_scores or {}
+            
+            # Get objective scores
+            objectives_data = []
+            for objective_id, objective_data in calculated_scores.get('objectives', {}).items():
+                if isinstance(objective_data, dict) and 'score' in objective_data:
+                    objectives_data.append({
+                        'id': objective_id,
+                        'name': objective_data.get('name', f'Objective {objective_id}'),
+                        'score': float(objective_data['score']) if objective_data['score'] is not None else 0.0
+                    })
+            
+            # Get overall sector score
+            sector_score = calculated_scores.get('sector', {})
+            overall_score = float(sector_score.get('overall_score', 0.0)) if sector_score.get('overall_score') is not None else 0.0
+            
+            # Get objective details from configurations
+            from configurations.models import Objective
+            objectives = Objective.objects.filter(is_active=True).order_by('order')
+            
+            # Match objectives with their scores
+            final_objectives = []
+            for objective in objectives:
+                # Find matching score data
+                objective_score_data = next(
+                    (obj for obj in objectives_data if str(obj['id']) == str(objective.id)), 
+                    None
+                )
+                
+                if objective_score_data:
+                    final_objectives.append({
+                        'id': objective.id,
+                        'name': objective.name,
+                        'score': objective_score_data['score']
+                    })
+                else:
+                    # If no score data, add with default score
+                    final_objectives.append({
+                        'id': objective.id,
+                        'name': objective.name,
+                        'score': 0.0
+                    })
+            
+            return Response({
+                'assessment': {
+                    'id': assessment.id,
+                    'name': assessment.name,
+                    'org_unit_name': assessment.org_unit_name,
+                    'created_at': assessment.created_at.isoformat(),
+                    'total_indicators': assessment.total_indicators,
+                    'total_objectives': assessment.total_objectives
+                },
+                'objectives': final_objectives,
+                'overall_score': overall_score
+            })
+            
+        except Exception as e:
+            return Response(
+                {'error': f'Failed to fetch analysis data: {str(e)}'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )

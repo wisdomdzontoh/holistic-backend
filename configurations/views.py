@@ -238,6 +238,66 @@ class ObjectiveViewSet(viewsets.ModelViewSet):
             'message': f'Objective {"activated" if objective.is_active else "deactivated"} successfully',
             'is_active': objective.is_active
         })
+    
+    @action(detail=False, methods=['get'])
+    def with_indicators(self, request):
+        """
+        Get objectives with their indicators for the definitions page
+        """
+        try:
+            from indicators.models import TrackedIndicator
+            
+            objectives = Objective.objects.filter(is_active=True).order_by('order')
+            result = []
+            
+            for objective in objectives:
+                # Get indicators for this objective
+                indicators = TrackedIndicator.objects.filter(
+                    objective_weights__objective=objective
+                ).order_by('display_order', 'name')
+                
+                objective_data = {
+                    'id': objective.id,
+                    'name': objective.name,
+                    'code': objective.code,
+                    'description': objective.description,
+                    'color': objective.color,
+                    'order': objective.order,
+                    'indicators': []
+                }
+                
+                for indicator in indicators:
+                    indicator_data = {
+                        'id': indicator.id,
+                        'name': indicator.name,
+                        'dhis2_uid': indicator.dhis2_uid,
+                        'indicator_number': indicator.indicator_number,
+                        'display_order': indicator.display_order,
+                        'description': indicator.description,
+                        'numerator': indicator.numerator,
+                        'denominator': indicator.denominator,
+                        'formula': indicator.formula,
+                        'source_of_data': indicator.source_of_data,
+                        'target_display': indicator.target_display,
+                        'target_value': indicator.target_value,
+                        'target_type': indicator.target_type,
+                        'is_active': indicator.is_active,
+                        'indicator_type': indicator.indicator_type
+                    }
+                    objective_data['indicators'].append(indicator_data)
+                
+                result.append(objective_data)
+            
+            return Response({
+                'objectives': result,
+                'total_objectives': len(result),
+                'total_indicators': sum(len(obj['indicators']) for obj in result)
+            })
+            
+        except Exception as e:
+            return Response({
+                'error': str(e)
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
 class ScoringRuleViewSet(viewsets.ModelViewSet):

@@ -99,9 +99,9 @@ class TrackedIndicatorResource(resources.ModelResource):
         import_id_fields = ()
         export_order = (
             'name', 'dhis2_uid', 'indicator_type', 'indicator_number', 
-            'display_order', 'formula', 'target_value', 'target_type',
-            'min_score', 'max_score', 'is_active', 'description',
-            'dhis2_name', 'dhis2_description', 'formula_components'
+            'display_order', 'formula', 'numerator', 'denominator', 'source_of_data',
+            'target_value', 'target_display', 'target_type', 'min_score', 'max_score', 
+            'is_active', 'description', 'dhis2_name', 'dhis2_description', 'formula_components'
         )
         exclude = ('created_at', 'updated_at', 'last_sync')
         
@@ -201,6 +201,9 @@ class TrackedIndicatorAdmin(ImportExportModelAdmin):
             'fields': ('indicator_number', 'display_order'),
             'classes': ('collapse',)
         }),
+        ('Indicator Definition', {
+            'fields': ('numerator', 'denominator', 'source_of_data'),
+        }),
         ('DHIS2 Metadata', {
             'fields': ('dhis2_name', 'dhis2_description', 'last_sync'),
             'classes': ('collapse',)
@@ -210,7 +213,7 @@ class TrackedIndicatorAdmin(ImportExportModelAdmin):
             'classes': ('collapse',)
         }),
         ('Target and Scoring', {
-            'fields': ('target_value', 'target_type', 'min_score', 'max_score')
+            'fields': ('target_value', 'target_display', 'target_type', 'min_score', 'max_score')
         }),
         ('Timestamps', {
             'fields': ('created_at', 'updated_at'),
