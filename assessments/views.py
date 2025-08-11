@@ -2145,28 +2145,42 @@ class DashboardViewSet(viewsets.ViewSet):
     def stats(self, request):
         """Get dashboard statistics"""
         try:
-            # Get basic counts
-            total_assessments = SavedAssessment.objects.count()
-            total_facilities = IndicatorScore.objects.values('org_unit_id').distinct().count()
+            # Get current user
+            current_user = get_dhis2_user_from_request(request)
+            if not current_user:
+                return Response(
+                    {'error': 'User not authenticated'},
+                    status=status.HTTP_401_UNAUTHORIZED
+                )
+            
+            # Get basic counts - filtered by user
+            total_assessments = SavedAssessment.objects.filter(created_by=current_user).count()
+            total_facilities = IndicatorScore.objects.filter(
+                assessment_period__in=SavedAssessment.objects.filter(created_by=current_user).values_list('periods', flat=True)
+            ).values('org_unit_id').distinct().count()
             total_indicators = TrackedIndicator.objects.filter(is_active=True).count()
             total_objectives = Objective.objects.filter(is_active=True).count()
             
-            # Recent assessments (last 30 days)
+            # Recent assessments (last 30 days) - filtered by user
             thirty_days_ago = timezone.now() - timedelta(days=30)
             recent_assessments = SavedAssessment.objects.filter(
+                created_by=current_user,
                 created_at__gte=thirty_days_ago
             ).count()
             
-            # Average sector score
+            # Average sector score - filtered by user's assessments
+            user_assessment_periods = SavedAssessment.objects.filter(created_by=current_user).values_list('periods', flat=True)
             sector_scores = SectorScore.objects.filter(
-                overall_score__isnull=False
+                overall_score__isnull=False,
+                assessment_period__in=user_assessment_periods
             ).values_list('overall_score', flat=True)
             average_sector_score = float(sum(sector_scores) / len(sector_scores)) if sector_scores else 0.0
             
-            # Top performing facilities
+            # Top performing facilities - filtered by user's assessments
             top_facilities = []
             facility_scores = SectorScore.objects.filter(
-                overall_score__isnull=False
+                overall_score__isnull=False,
+                assessment_period__in=user_assessment_periods
             ).select_related('assessment_period').order_by('-overall_score')[:5]
             
             for score in facility_scores:
@@ -2178,9 +2192,9 @@ class DashboardViewSet(viewsets.ViewSet):
                     'score_label': score.score_label
                 })
             
-            # Recent activity
+            # Recent activity - filtered by user
             recent_activity = []
-            audit_logs = AuditLog.objects.select_related('user').order_by('-created_at')[:10]
+            audit_logs = AuditLog.objects.filter(user=current_user).select_related('user').order_by('-created_at')[:10]
             
             for log in audit_logs:
                 activity_type = 'assessment_created'
@@ -2197,10 +2211,10 @@ class DashboardViewSet(viewsets.ViewSet):
                     'title': f"{log.action_type.replace('_', ' ').title()}",
                     'description': log.change_description or f"{log.entity_type} {log.entity_id}",
                     'timestamp': log.created_at.isoformat(),
-                    'user': log.user.username if log.user else 'System'
+                    'user': log.user.dhis2_username if log.user else 'System'
                 })
             
-            # Performance summary
+            # Performance summary - filtered by user's assessments
             performance_summary = {
                 'excellent': 0,
                 'satisfactory': 0,
@@ -2208,7 +2222,10 @@ class DashboardViewSet(viewsets.ViewSet):
                 'underperforming': 0
             }
             
-            for score in SectorScore.objects.filter(overall_score__isnull=False):
+            for score in SectorScore.objects.filter(
+                overall_score__isnull=False,
+                assessment_period__in=user_assessment_periods
+            ):
                 if score.overall_score >= 1.0:
                     performance_summary['excellent'] += 1
                 elif score.overall_score >= 0.0:
@@ -2218,6 +2235,64 @@ class DashboardViewSet(viewsets.ViewSet):
                 else:
                     performance_summary['underperforming'] += 1
             
+            # Calculate growth percentages (comparing current year to previous year)
+            current_year = timezone.now().year
+            previous_year = current_year - 1
+            
+            # Assessment growth - filtered by user
+            current_year_assessments = SavedAssessment.objects.filter(
+                created_by=current_user,
+                created_at__year=current_year
+            ).count()
+            previous_year_assessments = SavedAssessment.objects.filter(
+                created_by=current_user,
+                created_at__year=previous_year
+            ).count()
+            assessment_growth = 0
+            if previous_year_assessments > 0:
+                assessment_growth = round(((current_year_assessments - previous_year_assessments) / previous_year_assessments) * 100, 1)
+            
+            # Indicator growth (assuming indicators are added over time)
+            current_year_indicators = TrackedIndicator.objects.filter(
+                created_at__year__lte=current_year,
+                is_active=True
+            ).count()
+            previous_year_indicators = TrackedIndicator.objects.filter(
+                created_at__year__lte=previous_year,
+                is_active=True
+            ).count()
+            indicator_growth = 0
+            if previous_year_indicators > 0:
+                indicator_growth = round(((current_year_indicators - previous_year_indicators) / previous_year_indicators) * 100, 1)
+            
+            # Monthly assessment data for current year - filtered by user
+            monthly_assessments = {}
+            for month in range(1, 13):
+                month_name = timezone.now().replace(month=month, day=1).strftime('%b').lower()
+                count = SavedAssessment.objects.filter(
+                    created_by=current_user,
+                    created_at__year=current_year,
+                    created_at__month=month
+                ).count()
+                monthly_assessments[month_name] = count
+            
+            # Additional chart statistics
+            chart_stats = {
+                'peak_month': None,
+                'peak_count': 0,
+                'average_per_month': 0,
+                'months_with_data': 0,
+                'total_months': 12
+            }
+            
+            # Find peak month and calculate averages - filtered by user
+            if monthly_assessments:
+                peak_month = max(monthly_assessments.items(), key=lambda x: x[1])
+                chart_stats['peak_month'] = peak_month[0]
+                chart_stats['peak_count'] = peak_month[1]
+                chart_stats['months_with_data'] = sum(1 for count in monthly_assessments.values() if count > 0)
+                chart_stats['average_per_month'] = round(sum(monthly_assessments.values()) / 12, 1)
+            
             return Response({
                 'total_assessments': total_assessments,
                 'total_facilities': total_facilities,
@@ -2225,6 +2300,10 @@ class DashboardViewSet(viewsets.ViewSet):
                 'total_objectives': total_objectives,
                 'recent_assessments': recent_assessments,
                 'average_sector_score': round(average_sector_score, 2),
+                'assessment_growth': assessment_growth,
+                'indicator_growth': indicator_growth,
+                'monthly_assessments': monthly_assessments,
+                'chart_stats': chart_stats,
                 'top_performing_facilities': top_facilities,
                 'recent_activity': recent_activity,
                 'performance_summary': performance_summary
