@@ -40,7 +40,7 @@ class DHIS2Client:
         
         # Configure session
         self.session.verify = True  # SSL verification
-        self.session.timeout = 30
+        self.session.timeout = 60  # Increased timeout for analytics requests
         
         # Set authentication if provided
         if username and password:
@@ -697,7 +697,7 @@ class DHIS2Client:
             logger.error(f"Error getting API capabilities: {str(e)}")
             raise
     
-    def _make_request(self, method: str, endpoint: str, **kwargs) -> Dict[str, Any]:
+    def _make_request(self, method: str, endpoint: str, timeout: int = None, **kwargs) -> Dict[str, Any]:
         """
         Make a request to the DHIS2 API
         
@@ -740,7 +740,12 @@ class DHIS2Client:
                     # Remove params from kwargs since we built the URL manually
                     kwargs = {k: v for k, v in kwargs.items() if k != 'params'}
             
-            response = self.session.request(method, url, **kwargs)
+            # Use custom timeout if provided, otherwise use session default
+            request_kwargs = kwargs.copy()
+            if timeout is not None:
+                request_kwargs['timeout'] = timeout
+            
+            response = self.session.request(method, url, **request_kwargs)
             
             # Log request details for debugging
             logger.debug(f"Response status: {response.status_code}")
@@ -878,7 +883,8 @@ class DHIS2Client:
             logger.info(f"Org units: {org_units}")
             logger.info(f"Dimensions: {dimensions}")
             
-            data = self._make_request("GET", endpoint, params=params)
+            # Use longer timeout for analytics requests
+            data = self._make_request("GET", endpoint, params=params, timeout=120)
             
             logger.info(f"DHIS2 analytics response received. Response type: {type(data)}")
             if isinstance(data, dict):
