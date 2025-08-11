@@ -26,19 +26,23 @@ class DHIS2SessionMiddleware:
         """
         # Skip middleware for certain paths
         if self._should_skip_middleware(request.path):
+            print(f"DEBUG: Skipping middleware for path: {request.path}")
             return None
         
         session_key = request.session.session_key
         
         # If no session key, allow the request to proceed
         if not session_key:
+            print(f"DEBUG: No session key for path: {request.path}")
             return None
         
         # Check if DHIS2 session is valid
         if not is_dhis2_authenticated(session_key):
+            print(f"DEBUG: DHIS2 session not authenticated for path: {request.path}")
             # Only clear session for API requests that require authentication
             # Don't clear session for debug endpoints or public endpoints
             if request.path.startswith('/api/') and not self._is_public_endpoint(request.path):
+                print(f"DEBUG: Clearing session for path: {request.path}")
                 # Session is invalid, clear it
                 logout_dhis2_user(session_key)
                 request.session.flush()
@@ -51,6 +55,8 @@ class DHIS2SessionMiddleware:
                     },
                     status=401
                 )
+            else:
+                print(f"DEBUG: Not clearing session for public endpoint: {request.path}")
             
             return None
         
@@ -74,6 +80,8 @@ class DHIS2SessionMiddleware:
             '/api/dhis2-auth/login/',
             '/api/dhis2-auth/logout/',
             '/api/dhis2-auth/health/',
+            '/api/dhis2-auth/debug-session/',
+            '/api/dhis2-auth/test-auth/',
             '/admin/',
             '/static/',
             '/media/',
