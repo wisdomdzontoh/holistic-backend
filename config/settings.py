@@ -159,6 +159,24 @@ if not DEBUG:
         "https://holistic-assessment-frontend.vercel.app",  # Add your actual frontend domain
         "https://holistic-backend-y7gp.onrender.com"
     ]
+
+# Additional CORS settings for cookie handling
+CORS_ALLOW_HEADERS = [
+    'accept',
+    'accept-encoding',
+    'authorization',
+    'content-type',
+    'dnt',
+    'origin',
+    'user-agent',
+    'x-csrftoken',
+    'x-requested-with',
+]
+
+CORS_EXPOSE_HEADERS = [
+    'set-cookie',
+    'access-control-allow-credentials',
+]
 #CORS_ALLOWED_CREDENTIALS = False
 
 
@@ -247,9 +265,14 @@ SESSION_ENGINE = 'django.contrib.sessions.backends.db'
 SESSION_COOKIE_AGE = 24 * 60 * 60  # 24 hours
 SESSION_COOKIE_SECURE = not DEBUG  # Set to True in production with HTTPS
 SESSION_COOKIE_HTTPONLY = True
-SESSION_COOKIE_SAMESITE = 'Lax'  # Allows cross-site requests for CORS
+SESSION_COOKIE_SAMESITE = 'None' if not DEBUG else 'Lax'  # None for cross-site in production
 SESSION_SAVE_EVERY_REQUEST = True  # Save session on every request
 SESSION_EXPIRE_AT_BROWSER_CLOSE = False  # Keep session alive after browser close
+
+# Additional session settings for cross-origin
+if not DEBUG:
+    SESSION_COOKIE_DOMAIN = None  # Let browser handle domain
+    SESSION_COOKIE_PATH = '/'
 
 # Security settings for production
 if not DEBUG:

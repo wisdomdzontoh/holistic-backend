@@ -20,4 +20,7 @@ urlpatterns = [
     
     # Debug endpoint
     path('debug-session/', views.debug_session, name='debug_session'),
+    
+    # Test authentication endpoint
+    path('test-auth/', views.test_auth, name='test_auth'),
 ] 

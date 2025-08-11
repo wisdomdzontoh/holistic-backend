@@ -15,17 +15,27 @@ class DHIS2SessionAuthentication(authentication.BaseAuthentication):
         """
         session_key = request.session.session_key
         
+        # Debug logging
+        print(f"DEBUG: Authentication attempt - Session key: {session_key}")
+        print(f"DEBUG: Request cookies: {dict(request.COOKIES)}")
+        print(f"DEBUG: Request headers: {dict(request.headers)}")
+        
         if not session_key:
+            print("DEBUG: No session key found")
             return None
         
         # Check if DHIS2 session is valid
         if not is_dhis2_authenticated(session_key):
+            print(f"DEBUG: DHIS2 session not authenticated for key: {session_key}")
             return None
         
         # Get DHIS2 user
         dhis2_user = get_dhis2_user(session_key)
         if not dhis2_user:
+            print(f"DEBUG: No DHIS2 user found for session key: {session_key}")
             return None
+        
+        print(f"DEBUG: Authentication successful for user: {dhis2_user.dhis2_username}")
         
         # Create a user object that DRF can work with
         user = DHIS2UserWrapper(dhis2_user)

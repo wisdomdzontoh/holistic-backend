@@ -532,6 +532,12 @@ def debug_session(request):
         from .session import get_dhis2_session_data
         session_data = get_dhis2_session_data(session_key)
     
+    # Force session creation if it doesn't exist
+    if not session_key:
+        request.session.create()
+        session_key = request.session.session_key
+        print(f"DEBUG: Created new session with key: {session_key}")
+    
     return Response({
         'session_key': session_key,
         'has_session': bool(session_key),
@@ -542,5 +548,33 @@ def debug_session(request):
             'origin': request.headers.get('Origin'),
             'referer': request.headers.get('Referer'),
             'user_agent': request.headers.get('User-Agent'),
-        }
+        },
+        'session_created': request.session.session_key is not None,
+        'session_modified': request.session.modified,
     })
+
+
+@api_view(['GET'])
+def test_auth(request):
+    """
+    Test endpoint to verify authentication is working
+    """
+    from .session import get_dhis2_user_from_request
+    
+    user = get_dhis2_user_from_request(request)
+    
+    if user:
+        return Response({
+            'authenticated': True,
+            'user': {
+                'username': user.dhis2_username,
+                'id': user.id,
+                'instance_url': user.dhis2_instance_url,
+            },
+            'message': 'Authentication successful'
+        })
+    else:
+        return Response({
+            'authenticated': False,
+            'message': 'Authentication failed - no valid session found'
+        }, status=401)
