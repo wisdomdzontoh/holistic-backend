@@ -17,4 +17,7 @@ urlpatterns = [
     
     # Health check
     path('health/', views.health_check, name='health_check'),
+    
+    # Debug endpoint
+    path('debug-session/', views.debug_session, name='debug_session'),
 ] 

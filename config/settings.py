@@ -148,8 +148,17 @@ CORS_ALLOWED_ORIGINS = [
     "http://127.0.0.1:3000",
     "http://127.0.0.1:3003",
     "https://holistic-assessment.vercel.app",
+    "https://holistic-assessment-frontend.vercel.app",  # Add your actual frontend domain
     "https://holistic-backend-y7gp.onrender.com"
 ]
+
+# Additional CORS settings for production
+if not DEBUG:
+    CORS_ALLOWED_ORIGINS = [
+        "https://holistic-assessment.vercel.app",
+        "https://holistic-assessment-frontend.vercel.app",  # Add your actual frontend domain
+        "https://holistic-backend-y7gp.onrender.com"
+    ]
 #CORS_ALLOWED_CREDENTIALS = False
 
 

@@ -518,3 +518,29 @@ def health_check(request):
         },
         status=status.HTTP_200_OK
     )
+
+
+@api_view(['GET'])
+def debug_session(request):
+    """
+    Debug endpoint to check session status and authentication
+    """
+    session_key = request.session.session_key
+    session_data = None
+    
+    if session_key:
+        from .session import get_dhis2_session_data
+        session_data = get_dhis2_session_data(session_key)
+    
+    return Response({
+        'session_key': session_key,
+        'has_session': bool(session_key),
+        'session_data': session_data,
+        'is_authenticated': bool(session_data),
+        'cookies': dict(request.COOKIES),
+        'headers': {
+            'origin': request.headers.get('Origin'),
+            'referer': request.headers.get('Referer'),
+            'user_agent': request.headers.get('User-Agent'),
+        }
+    })
