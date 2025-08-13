@@ -86,7 +86,32 @@ class TrackedIndicator(models.Model):
         decimal_places=2,
         null=True,
         blank=True,
-        help_text="Target value for this indicator"
+        help_text="Target value for this indicator (single value or upper bound for ranges)"
+    )
+    target_lower_limit = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        help_text="Lower limit for range targets (e.g., for '1-5' range, this would be 1)"
+    )
+    target_upper_limit = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        help_text="Upper limit for range targets (e.g., for '1-5' range, this would be 5)"
+    )
+    target_format = models.CharField(
+        max_length=20,
+        choices=[
+            ('SINGLE', 'Single Value'),
+            ('RANGE', 'Range'),
+            ('MINIMUM', 'Minimum'),
+            ('MAXIMUM', 'Maximum')
+        ],
+        default='SINGLE',
+        help_text="Type of target (single value, range, minimum, or maximum)"
     )
     target_type = models.CharField(
         max_length=10,

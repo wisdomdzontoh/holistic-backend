@@ -64,7 +64,7 @@ class TrackedIndicatorSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'name', 'dhis2_uid', 'indicator_type', 'indicator_type_display',
             'indicator_number', 'display_order', 'formula', 'numerator', 'denominator',
-            'source_of_data', 'target_value', 'target_display', 'target_type', 'target_type_display',
+            'source_of_data', 'target_value', 'target_display', 'target_lower_limit', 'target_upper_limit', 'target_format', 'target_type', 'target_type_display',
             'min_score', 'max_score', 'is_active', 'description',
             'dhis2_name', 'dhis2_description', 'created_at', 'updated_at', 'last_sync',
             'thresholds', 'category_mappings', 'objective_weights'
@@ -86,7 +86,7 @@ class TrackedIndicatorListSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'name', 'dhis2_uid', 'indicator_type', 'indicator_type_display',
             'indicator_number', 'display_order', 'numerator', 'denominator',
-            'source_of_data', 'is_active', 'target_value', 'target_display', 'target_type', 'category_count',
+            'source_of_data', 'is_active', 'target_value', 'target_display', 'target_lower_limit', 'target_upper_limit', 'target_format', 'target_type', 'category_count',
             'created_at', 'updated_at'
         ]
         read_only_fields = ['created_at', 'updated_at']
@@ -104,7 +104,7 @@ class TrackedIndicatorCreateSerializer(serializers.ModelSerializer):
         fields = [
             'name', 'dhis2_uid', 'indicator_type', 'indicator_number', 'display_order',
             'formula', 'numerator', 'denominator', 'source_of_data', 'target_value',
-            'target_display', 'target_type', 'min_score', 'max_score', 'is_active', 'description'
+            'target_display', 'target_lower_limit', 'target_upper_limit', 'target_format', 'target_type', 'min_score', 'max_score', 'is_active', 'description'
         ]
     
     def validate_dhis2_uid(self, value):
@@ -142,7 +142,7 @@ class TrackedIndicatorUpdateSerializer(serializers.ModelSerializer):
         fields = [
             'name', 'indicator_type', 'indicator_number', 'display_order',
             'formula', 'numerator', 'denominator', 'source_of_data', 'target_value',
-            'target_display', 'target_type', 'min_score', 'max_score', 'is_active', 'description'
+            'target_display', 'target_lower_limit', 'target_upper_limit', 'target_format', 'target_type', 'min_score', 'max_score', 'is_active', 'description'
         ]
     
     def validate(self, data):

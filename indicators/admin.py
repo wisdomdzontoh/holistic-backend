@@ -100,7 +100,7 @@ class TrackedIndicatorResource(resources.ModelResource):
         export_order = (
             'name', 'dhis2_uid', 'indicator_type', 'indicator_number', 
             'display_order', 'formula', 'numerator', 'denominator', 'source_of_data',
-            'target_value', 'target_display', 'target_type', 'min_score', 'max_score', 
+            'target_value', 'target_display', 'target_lower_limit', 'target_upper_limit', 'target_format', 'target_type', 'min_score', 'max_score', 
             'is_active', 'description', 'dhis2_name', 'dhis2_description', 'formula_components'
         )
         exclude = ('created_at', 'updated_at', 'last_sync')
@@ -180,7 +180,7 @@ class TrackedIndicatorAdmin(ImportExportModelAdmin):
     
     list_display = [
         'name', 'indicator_number', 'dhis2_uid', 'indicator_type', 'is_active', 
-        'target_value', 'target_operator', 'target_display', 'display_order'
+        'target_value', 'target_lower_limit', 'target_upper_limit', 'target_format', 'target_operator', 'target_display', 'display_order'
     ]
     list_filter = [
         'indicator_type', 'is_active', 'target_type', 'target_operator', 
@@ -206,7 +206,7 @@ class TrackedIndicatorAdmin(ImportExportModelAdmin):
             'fields': ('numerator', 'denominator', 'formula', 'source_of_data'),
         }),
         ('Target Configuration', {
-            'fields': ('target_value', 'target_display', 'target_type', 'target_operator', 'target_measurement_type')
+            'fields': ('target_value', 'target_lower_limit', 'target_upper_limit', 'target_format', 'target_display', 'target_type', 'target_operator', 'target_measurement_type')
         }),
         ('Scoring Configuration', {
             'fields': ('min_score', 'max_score')
