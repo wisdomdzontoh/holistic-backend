@@ -164,7 +164,7 @@ class IndicatorScoreAdmin(admin.ModelAdmin):
             'classes': ('collapse',)
         }),
         ('Scoring', {
-            'fields': ('score', 'score_color', 'score_label', 'scoring_rule', 'weight')
+            'fields': ('score', 'score_color', 'score_label', 'scoring_rule', 'weight', 'remarks')
         }),
         ('Manual Override', {
             'fields': ('is_manual_override', 'override_reason', 'override_user'),

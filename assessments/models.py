@@ -508,6 +508,9 @@ class IndicatorScore(models.Model):
         help_text="Weight of this indicator in the objective"
     )
     
+    # User notes
+    remarks = models.TextField(blank=True, help_text="User remarks about this indicator score")
+    
     # Status
     is_manual_override = models.BooleanField(default=False)
     override_reason = models.TextField(blank=True)
@@ -706,11 +709,11 @@ class IndicatorScore(models.Model):
     def _get_score_color(self, score: int) -> str:
         """Get color based on score"""
         color_map = {
-            2: '#28a745',   # Green
-            1: '#90EE90',   # Light Green
-            0: '#ffc107',   # Yellow
-            -1: '#fd7e14',  # Orange
-            -2: '#dc3545'   # Red
+            2: '#548235',   # Dark Green
+            1: '#A9D08E',   # Light Green
+            0: '#FFFF00',   # Yellow
+            -1: '#FFC7CE',  # Light Red
+            -2: '#FF0000'   # Red
         }
         return color_map.get(score, '#6c757d')
     
@@ -782,16 +785,16 @@ class IndicatorScore(models.Model):
         if score is None:
             return '#6c757d'
         
-        if score == 2:
-            return '#116045'  # Green
-        elif score == 1:
-            return '#2AA63E'  # Light-green
-        elif score >= 0:
-            return '#ffc107'  # Yellow
-        elif score >= -1:
-            return '#FF6467'  # Light-red
+        if score >= 2:
+            return '#548235'  # Dark Green
+        elif score >= 1:
+            return '#A9D08E'  # Light Green
+        elif score == 0:
+            return '#FFFF00'  # Yellow
+        elif score == -1:
+            return '#FFC7CE'  # Light Red
         else:
-            return '#C11007'  # Deep-red
+            return '#FF0000'  # Red
     
     def _get_score_label(self, score):
         """Get label for a given score"""
@@ -1025,19 +1028,19 @@ class ObjectiveScore(models.Model):
         # Determine color and label based on final score
         if self.final_score is not None:
             if self.final_score >= 1.5:
-                self.score_color = '#28a745'
+                self.score_color = '#548235'
                 self.score_label = 'Excellent'
             elif self.final_score >= 0.5:
-                self.score_color = '#17a2b8'
+                self.score_color = '#A9D08E'
                 self.score_label = 'Good'
             elif self.final_score >= -0.5:
-                self.score_color = '#ffc107'
+                self.score_color = '#FFFF00'
                 self.score_label = 'Sustained'
             elif self.final_score >= -1.5:
-                self.score_color = '#fd7e14'
+                self.score_color = '#FFC7CE'
                 self.score_label = 'Underperforming'
             else:
-                self.score_color = '#dc3545'
+                self.score_color = '#FF0000'
                 self.score_label = 'Poor'
         
         self.last_calculated = timezone.now()
@@ -1124,17 +1127,20 @@ class MilestoneScore(models.Model):
         
         # Set color and label based on score
         if self.score is not None:
-            if self.score >= 1:
-                self.score_color = '#28a745'  # Green
+            if self.score >= 2:
+                self.score_color = '#548235'  # Dark Green
                 self.score_label = 'Highly Performing'
+            elif self.score >= 1:
+                self.score_color = '#A9D08E'  # Light Green
+                self.score_label = 'Moderately Performing'
             elif self.score >= 0:
-                self.score_color = '#ffc107'  # Yellow
+                self.score_color = '#FFFF00'  # Yellow
                 self.score_label = 'Sustained'
             elif self.score >= -1:
-                self.score_color = '#fd7e14'  # Orange
+                self.score_color = '#FFC7CE'  # Light Red
                 self.score_label = 'Underperforming'
             else:
-                self.score_color = '#dc3545'  # Red
+                self.score_color = '#FF0000'  # Red
                 self.score_label = 'Severely Underperforming'
         
         # Update metadata
@@ -1237,19 +1243,19 @@ class SectorScore(models.Model):
             
             # Determine color and label based on overall score
             if self.overall_score >= 1.5:
-                self.score_color = '#28a745'
+                self.score_color = '#548235'
                 self.score_label = 'Excellent'
             elif self.overall_score >= 0.5:
-                self.score_color = '#17a2b8'
+                self.score_color = '#A9D08E'
                 self.score_label = 'Good'
             elif self.overall_score >= -0.5:
-                self.score_color = '#ffc107'
+                self.score_color = '#FFFF00'
                 self.score_label = 'Sustained'
             elif self.overall_score >= -1.5:
-                self.score_color = '#fd7e14'
+                self.score_color = '#FFC7CE'
                 self.score_label = 'Underperforming'
             else:
-                self.score_color = '#dc3545'
+                self.score_color = '#FF0000'
                 self.score_label = 'Poor'
         
         self.last_calculated = timezone.now()

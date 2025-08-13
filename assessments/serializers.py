@@ -1,7 +1,7 @@
 from rest_framework import serializers
 from .models import (
     DataSyncLog, IndicatorData, IndicatorScore, ObjectiveScore, 
-    SectorScore, SavedAssessment, AuditLog, ConflictResolution
+    SectorScore, SavedAssessment, AuditLog, ConflictResolution, MilestoneScore
 )
 from indicators.models import TrackedIndicator
 from configurations.models import Objective, AssessmentPeriod
@@ -82,7 +82,7 @@ class IndicatorScoreSerializer(serializers.ModelSerializer):
             'assessment_period', 'assessment_period_name', 'current_value',
             'previous_value', 'target_value', 'target_gap', 'percent_change',
             'score', 'score_color', 'score_label', 'scoring_rule', 'scoring_rule_name',
-            'weight', 'is_manual_override', 'override_reason', 'override_user',
+            'weight', 'remarks', 'is_manual_override', 'override_reason', 'override_user',
             'override_user_name', 'created_at', 'updated_at', 'last_calculated'
         ]
         read_only_fields = [
@@ -150,6 +150,29 @@ class SectorScoreSerializer(serializers.ModelSerializer):
             assessment_period=obj.assessment_period
         )
         return ObjectiveScoreSerializer(objective_scores, many=True).data
+
+
+class MilestoneScoreSerializer(serializers.ModelSerializer):
+    """
+    Serializer for milestone scores
+    """
+    milestone_name = serializers.CharField(source='milestone.name', read_only=True)
+    objective_name = serializers.CharField(source='objective.name', read_only=True)
+    assessment_period_name = serializers.CharField(source='assessment_period.name', read_only=True)
+    override_user_name = serializers.CharField(source='override_user.dhis2_username', read_only=True)
+    
+    class Meta:
+        model = MilestoneScore
+        fields = [
+            'id', 'milestone', 'milestone_name', 'objective', 'objective_name',
+            'org_unit_id', 'org_unit_name', 'assessment_period', 'assessment_period_name',
+            'score', 'score_color', 'score_label', 'notes', 'is_manual_override',
+            'override_reason', 'override_user', 'override_user_name',
+            'created_at', 'updated_at', 'last_calculated'
+        ]
+        read_only_fields = [
+            'created_at', 'updated_at', 'last_calculated', 'score_color', 'score_label'
+        ]
 
 
 # Create/Update serializers

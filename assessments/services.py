@@ -218,14 +218,14 @@ class RealTimeDHIS2Service:
         if score is None:
             return ('#6c757d', 'N/A')
         if score >= 2:
-            return ('#28a745', 'Highly Performing')
+            return ('#548235', 'Highly Performing')
         if score == 1:
-            return ('#28a745', 'Moderately Performing')
+            return ('#A9D08E', 'Moderately Performing')
         if score == 0:
-            return ('#ffc107', 'Sustained')
+            return ('#FFFF00', 'Sustained')
         if score == -1:
-            return ('#fd7e14', 'Underperforming')
-        return ('#dc3545', 'Severely Underperforming')
+            return ('#FFC7CE', 'Underperforming')
+        return ('#FF0000', 'Severely Underperforming')
 
     def generate_holistic_excel(self, assessment_payload: list) -> str:
         """Generate an Excel file that mirrors the table format with color coding.
@@ -261,14 +261,16 @@ class RealTimeDHIS2Service:
         def score_fill(score: float | None):
             if score is None:
                 return None
-            # Map scores based on flow diagram: -2 (Red), -1 (Magenta), 0 (Yellow), 1 (Green), 2 (Green)
+            # New color scheme: 2 (Dark Green), 1 (Light Green), 0 (Yellow), -1 (Light Red), -2 (Red)
+            if score >= 2:
+                return PatternFill('solid', fgColor='548235')  # Dark Green for 2
             if score >= 1:
-                return PatternFill('solid', fgColor='28A745')  # Green for 1 and 2
+                return PatternFill('solid', fgColor='A9D08E')  # Light Green for 1
             if score == 0:
-                return PatternFill('solid', fgColor='FFC107')  # Yellow for 0
+                return PatternFill('solid', fgColor='FFFF00')  # Yellow for 0
             if score == -1:
-                return PatternFill('solid', fgColor='E91E63')  # Magenta for -1
-            return PatternFill('solid', fgColor='DC3545')  # Red for -2
+                return PatternFill('solid', fgColor='FFC7CE')  # Light Red for -1
+            return PatternFill('solid', fgColor='FF0000')  # Red for -2
 
         data = assessment_payload[0] if assessment_payload else None
         if not data:
