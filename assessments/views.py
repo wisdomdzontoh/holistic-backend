@@ -1076,11 +1076,12 @@ class AssessmentManagementViewSet(viewsets.ViewSet):
                     org_unit_ids = session_data.get('org_units')
             
             # Create sync request for all periods
+            # Use the actual period codes from the frontend instead of generating from date range
+            period_codes = [period_data.get('code', period_data['name']) for period_data in selected_periods]
             sync_request = {
                 'sync_type': 'period',
                 'org_unit_ids': org_unit_ids,
-                'period_start': min(p.start_date for p in created_periods),
-                'period_end': max(p.end_date for p in created_periods),
+                'periods': period_codes,  # Use actual period codes
                 'calculate_scores': True
             }
             

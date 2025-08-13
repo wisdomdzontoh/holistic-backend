@@ -560,8 +560,20 @@ class RealTimeDHIS2Service:
             
             # Extract configuration
             org_unit_ids = assessment_config.get('org_unit_ids', [])
-            periods = assessment_config.get('periods', [])
+            periods_raw = assessment_config.get('periods', [])
             indicator_uids = assessment_config.get('indicator_uids', [])
+            
+            # Handle periods - they can be strings or objects with 'code' field
+            periods = []
+            for period in periods_raw:
+                if isinstance(period, dict) and 'code' in period:
+                    periods.append(period['code'])
+                elif isinstance(period, str):
+                    periods.append(period)
+                else:
+                    # Fallback: try to extract code from period object
+                    period_code = getattr(period, 'code', str(period))
+                    periods.append(period_code)
             
             if not org_unit_ids or not periods:
                 raise ValidationError("Organization units and periods are required")
@@ -659,28 +671,28 @@ class RealTimeDHIS2Service:
                         }
                         
                         # Fetch data for each period
-                        for period in periods:
+                        for period_code in periods:
                             try:
                                 if indicator.dhis2_uid:
                                     value = self._fetch_single_indicator_data(
-                                        indicator, org_unit_ids[0], period
+                                        indicator, org_unit_ids[0], period_code
                                     )
                                     clean_value = self._clean_numeric_value(value)
-                                    indicator_data['data_values'][period] = {
+                                    indicator_data['data_values'][period_code] = {
                                         'value': clean_value,
                                         'dhis2_value': clean_value,
                                         'manual_override': None
                                     }
                                 else:
                                     # Manual indicator – initialize empty value, editable on FE
-                                    indicator_data['data_values'][period] = {
+                                    indicator_data['data_values'][period_code] = {
                                         'value': None,
                                         'dhis2_value': None,
                                         'manual_override': None
                                     }
                             except Exception as e:
-                                logger.warning(f"Failed to process {indicator.name} for period {period}: {str(e)}")
-                                indicator_data['data_values'][period] = {
+                                logger.warning(f"Failed to process {indicator.name} for period {period_code}: {str(e)}")
+                                indicator_data['data_values'][period_code] = {
                                     'value': None,
                                     'dhis2_value': None,
                                     'manual_override': None
@@ -688,7 +700,7 @@ class RealTimeDHIS2Service:
                         # Compute percent_change and target_gap for latest vs previous period
                         try:
                             if isinstance(periods, list) and len(periods) >= 1:
-                                last_key = periods[-1]
+                                last_key = periods[-1]  # This is now a period code
                                 prev_key = periods[-2] if len(periods) > 1 else None
                                 curr_val = indicator_data['data_values'].get(last_key, {}).get('value')
                                 prev_val = indicator_data['data_values'].get(prev_key, {}).get('value') if prev_key else None
@@ -2051,6 +2063,12 @@ class DataSyncService:
     
     def _get_periods_to_sync(self, sync_request):
         """Get periods to sync based on request"""
+        # Check if periods are provided directly
+        periods = sync_request.get('periods')
+        if periods:
+            # Use the provided periods directly
+            return periods
+        
         period_start = sync_request.get('period_start')
         period_end = sync_request.get('period_end')
         
