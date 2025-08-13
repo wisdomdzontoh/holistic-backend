@@ -95,6 +95,64 @@ class TrackedIndicator(models.Model):
         help_text="Whether higher or lower values are better"
     )
     
+    # Holistic Assessment target configuration
+    target_operator = models.CharField(
+        max_length=10,
+        choices=[
+            ('>', 'Greater than'),
+            ('>=', 'Greater than or equal'),
+            ('<', 'Less than'),
+            ('<=', 'Less than or equal'),
+            ('=', 'Equal to')
+        ],
+        default='>=',
+        help_text="Operator for target comparison (e.g., >5%)"
+    )
+    target_measurement_type = models.CharField(
+        max_length=20,
+        choices=[
+            ('PERCENTAGE', 'Percentage'),
+            ('ABSOLUTE', 'Absolute Number'),
+            ('RATIO', 'Ratio')
+        ],
+        default='PERCENTAGE',
+        help_text="Type of target measurement"
+    )
+    
+    # Performance thresholds (configurable per indicator)
+    improvement_threshold = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        default=5.0,
+        help_text="Threshold for '>5%' improvement (default: 5.0)"
+    )
+    stability_threshold = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        default=5.0,
+        help_text="Threshold for stable performance (default: 5.0)"
+    )
+    decline_threshold = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        default=10.0,
+        help_text="Threshold for significant decline (default: 10.0)"
+    )
+    
+    # Gap analysis thresholds
+    close_gap_threshold = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        default=10.0,
+        help_text="Threshold for 'close to target' (default: 10.0)"
+    )
+    far_gap_threshold = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        default=40.0,
+        help_text="Threshold for 'far from target' (default: 40.0)"
+    )
+    
     # Scoring configuration
     min_score = models.IntegerField(
         default=-2,

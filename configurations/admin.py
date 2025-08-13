@@ -5,6 +5,7 @@ from .models import (
     Milestone, Objective, ScoringRule, WeightingScheme, ObjectiveWeight, 
     IndicatorWeight, AssessmentPeriod, SystemConfiguration
 )
+from datetime import timedelta
 
 
 class ObjectiveWeightInline(admin.TabularInline):
@@ -324,22 +325,48 @@ class AssessmentPeriodAdmin(admin.ModelAdmin):
     """
     list_display = [
         'name', 'period_type', 'start_date', 'end_date', 
-        'is_active', 'is_current', 'duration_days'
+        'is_active', 'is_current', 'duration_days', 'period_description'
     ]
     list_filter = ['period_type', 'is_active', 'is_current', 'start_date']
-    search_fields = ['name']
+    search_fields = ['name', 'description']
     ordering = ['-start_date']
     
     fieldsets = (
         ('Basic Information', {
-            'fields': ('name', 'period_type', 'is_active', 'is_current')
+            'fields': ('name', 'description', 'period_type', 'is_active', 'is_current')
         }),
         ('Date Range', {
-            'fields': ('start_date', 'end_date')
+            'fields': ('start_date', 'end_date'),
+            'description': 'Set the start and end dates for this assessment period. For quarterly periods, ensure the dates align with calendar quarters.'
+        }),
+        ('Period Details', {
+            'fields': ('fiscal_year', 'quarter', 'month'),
+            'description': 'Optional fields to help categorize the period. These are automatically populated based on the date range.',
+            'classes': ('collapse',)
         }),
     )
     
-    actions = ['activate_periods', 'deactivate_periods', 'set_as_current']
+    readonly_fields = ['duration_days', 'period_description']
+    
+    def duration_days(self, obj):
+        """Calculate duration in days"""
+        if obj.start_date and obj.end_date:
+            return (obj.end_date - obj.start_date).days + 1
+        return '-'
+    duration_days.short_description = 'Duration (Days)'
+    
+    def period_description(self, obj):
+        """Generate a human-readable description of the period"""
+        if obj.period_type == 'Quarterly':
+            return f"Q{obj.quarter} {obj.fiscal_year}" if obj.quarter and obj.fiscal_year else f"Quarterly {obj.start_date.year}"
+        elif obj.period_type == 'Yearly':
+            return f"FY {obj.fiscal_year}" if obj.fiscal_year else f"Year {obj.start_date.year}"
+        elif obj.period_type == 'Monthly':
+            return f"{obj.start_date.strftime('%B %Y')}"
+        return obj.name
+    period_description.short_description = 'Period Description'
+    
+    actions = ['activate_periods', 'deactivate_periods', 'set_as_current', 'duplicate_periods']
     
     def activate_periods(self, request, queryset):
         """Activate selected periods"""
@@ -359,12 +386,35 @@ class AssessmentPeriodAdmin(admin.ModelAdmin):
             self.message_user(request, 'Please select exactly one period to set as current.', level='ERROR')
             return
         
+        # Clear current flag from all other periods
+        AssessmentPeriod.objects.filter(is_current=True).update(is_current=False)
+        
         period = queryset.first()
         period.is_current = True
         period.save()
         
         self.message_user(request, f'{period.name} has been set as the current assessment period.')
     set_as_current.short_description = "Set as current period"
+    
+    def duplicate_periods(self, request, queryset):
+        """Duplicate selected periods"""
+        duplicated_count = 0
+        
+        for period in queryset:
+            # Create a copy with modified dates
+            new_period = AssessmentPeriod.objects.create(
+                name=f"{period.name} (Copy)",
+                description=period.description,
+                period_type=period.period_type,
+                start_date=period.start_date + timedelta(days=365),  # Add one year
+                end_date=period.end_date + timedelta(days=365),
+                is_active=False,  # Start as inactive
+                is_current=False
+            )
+            duplicated_count += 1
+        
+        self.message_user(request, f'{duplicated_count} assessment periods have been duplicated.')
+    duplicate_periods.short_description = "Duplicate selected periods"
 
 
 @admin.register(SystemConfiguration)

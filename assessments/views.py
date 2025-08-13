@@ -32,7 +32,7 @@ from .serializers import (
     ManualOverrideSerializer, AuditLogFilterSerializer, ConflictResolutionFilterSerializer,
     ManualDataUpdateSerializer, BulkManualDataUpdateSerializer, ManualScoreOverrideSerializer
 )
-from .services import DataSyncService, ScoreCalculationService, DashboardService, RealTimeDHIS2Service, AssessmentSaveService, ManualDataEntryService
+# Services will be imported lazily to avoid circular imports
 from dhis2_auth.session import get_dhis2_user, get_dhis2_user_from_request, get_dhis2_session_data
 from dhis2_auth.dhis_client import DHIS2ClientFactory
 from configurations.models import AssessmentPeriod
@@ -74,7 +74,8 @@ class DataSyncLogViewSet(viewsets.ModelViewSet):
             dhis2_user = get_dhis2_user_from_request(request)
             
             # Initialize sync service
-            sync_service = DataSyncService()
+            from . import services
+            sync_service = services.DataSyncService()
             
             # Perform the sync
             sync_log = sync_service.sync_data(serializer.validated_data, dhis2_user, request.session.session_key)
@@ -346,6 +347,7 @@ class AssessmentDashboardViewSet(viewsets.ViewSet):
     
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
+        from .services import DashboardService
         self.dashboard_service = DashboardService()
     
     @action(detail=False, methods=['get'])
@@ -464,7 +466,8 @@ class AssessmentManagementViewSet(viewsets.ViewSet):
                 serializer.validated_data['org_unit_ids'] = session_data.get('org_units', [])
             
             # Initialize calculation service
-            calculation_service = ScoreCalculationService()
+            from . import services
+            calculation_service = services.ScoreCalculationService()
             
             # Perform bulk calculation
             results = calculation_service.bulk_calculate_scores(serializer.validated_data)
@@ -517,8 +520,8 @@ class AssessmentManagementViewSet(viewsets.ViewSet):
                 }, status=status.HTTP_404_NOT_FOUND)
             
             # Generate report data
-            from .services import DashboardService
-            dashboard_service = DashboardService()
+            from . import services
+            dashboard_service = services.DashboardService()
             
             report_data = dashboard_service.get_org_unit_performance(
                 request.user, org_unit_id, assessment_period.name
@@ -1062,7 +1065,8 @@ class AssessmentManagementViewSet(viewsets.ViewSet):
                 created_periods.append(period)
             
             # Trigger data sync for all periods
-            sync_service = DataSyncService()
+            from . import services
+            sync_service = services.DataSyncService()
             
             # Get user's org unit from session if not specified
             if not org_unit_ids:
@@ -1430,8 +1434,23 @@ class HolisticAssessmentViewSet(viewsets.ViewSet):
     
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self.realtime_service = RealTimeDHIS2Service()
-        self.save_service = AssessmentSaveService()
+        # Lazy initialization - services will be created when needed
+        self._realtime_service = None
+        self._save_service = None
+    
+    @property
+    def realtime_service(self):
+        if self._realtime_service is None:
+            from . import services
+            self._realtime_service = services.RealTimeDHIS2Service()
+        return self._realtime_service
+    
+    @property
+    def save_service(self):
+        if self._save_service is None:
+            from . import services
+            self._save_service = services.AssessmentSaveService()
+        return self._save_service
     
     @action(detail=False, methods=['post'])
     def fetch_data(self, request):
@@ -1986,7 +2005,8 @@ class ManualDataEntryViewSet(viewsets.ViewSet):
     
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self.manual_data_service = ManualDataEntryService()
+        from . import services
+        self.manual_data_service = services.ManualDataEntryService()
     
     @action(detail=False, methods=['post'])
     def update_indicator_data(self, request):
@@ -2622,6 +2642,58 @@ class DashboardViewSet(viewsets.ViewSet):
                         'score': 0.0
                     })
             
+            # Get detailed scoring information from IndicatorScore and ScoringContext
+            detailed_scores = []
+            try:
+                from assessments.models import IndicatorScore, ScoringContext
+                
+                # Get all indicator scores for this assessment
+                indicator_scores = IndicatorScore.objects.filter(
+                    assessment_period__name=assessment.assessment_period,
+                    org_unit_id=assessment.org_unit_id
+                ).select_related(
+                    'indicator', 'objective', 'scoring_context'
+                ).prefetch_related('indicator')
+                
+                for score in indicator_scores:
+                    detailed_score = {
+                        'indicator_id': str(score.indicator.id),
+                        'indicator_name': score.indicator.name,
+                        'objective_name': score.objective.name if score.objective else 'Unknown',
+                        'current_value': float(score.current_value) if score.current_value else None,
+                        'previous_value': float(score.previous_value) if score.previous_value else None,
+                        'target_value': float(score.indicator.target_value) if score.indicator.target_value else None,
+                        'data_provided': score.current_value is not None,
+                        'current_meets_target': None,
+                        'previous_meets_target': None,
+                        'change_category': None,
+                        'gap_category': None,
+                        'percent_change': None,
+                        'target_gap': None,
+                        'final_score': score.score or 0,
+                        'score_color': score.score_color or '#6c757d',
+                        'score_label': score.score_label or 'No Data'
+                    }
+                    
+                    # Get detailed scoring context if available
+                    if score.scoring_context:
+                        context = score.scoring_context
+                        detailed_score.update({
+                            'data_provided': context.data_provided,
+                            'current_meets_target': context.current_meets_target,
+                            'previous_meets_target': context.previous_meets_target,
+                            'change_category': context.change_category,
+                            'gap_category': context.gap_category,
+                            'percent_change': float(context.percent_change) if context.percent_change else None,
+                            'target_gap': float(context.target_gap) if context.target_gap else None,
+                        })
+                    
+                    detailed_scores.append(detailed_score)
+                    
+            except Exception as e:
+                print(f"DEBUG: Error getting detailed scores: {e}")
+                # Continue without detailed scores if there's an error
+            
             return Response({
                 'assessment': {
                     'id': assessment.id,
@@ -2632,7 +2704,8 @@ class DashboardViewSet(viewsets.ViewSet):
                     'total_objectives': assessment.total_objectives
                 },
                 'objectives': final_objectives,
-                'overall_score': overall_score
+                'overall_score': overall_score,
+                'detailed_scores': detailed_scores
             })
             
         except Exception as e:

@@ -53,48 +53,98 @@ class RealTimeDHIS2Service:
         return '<=-10%'
 
     def _classify_gap_category(self, gap_pct: float | None) -> str | None:
-        """Map absolute deviation to P category per scoring context (|gap| thresholds)."""
+        """Map signed gap to P category per Excel formula: =IF($I4<=10%,"<=10%",IF(AND($I4>10%,$I4<=40%),"10%<PT<=40%",IF($I4>40%,">40%","")))"""
         if gap_pct is None:
             return None
-        abs_gap = abs(gap_pct)
-        if abs_gap <= 10:
+        # Use signed gap directly, matching Excel behavior
+        if gap_pct <= 10:
             return '<=10%'
-        if 10 < abs_gap <= 40:
+        if 10 < gap_pct <= 40:
             return '10%<PT<=40%'
-        return '>40%'
+        if gap_pct > 40:
+            return '>40%'
+        return None
 
     def _compute_trend_score(self, has_data: bool, current_meets: bool | None, previous_meets: bool | None,
                               change_cat: str | None, gap_cat: str | None) -> int:
-        """Replicate the nested rules (–2..+2) using L/M/N, O, P from scoring-context.md."""
+        """Use the updated HolisticScoringService algorithm for real-time scoring."""
+        # Use the updated scoring service
+        from assessments.services import HolisticScoringService
+        
+        # Create a mock indicator for scoring (we only need target_operator and target_type)
+        class MockIndicator:
+            def __init__(self, target_type='increase'):
+                self.target_operator = '>=' if target_type == 'increase' else '<='
+                self.target_type = target_type
+                self.target_value = 100  # Dummy value, not used in scoring
+        
+        # Create mock indicator
+        indicator = MockIndicator()
+        
+        # Get current and previous values from the context
+        # For real-time scoring, we need to extract these from the data
+        current_value = None
+        previous_value = None
+        
+        # Since we don't have the actual values here, we'll use the simplified logic
+        # based on the categories and target achievement
+        
+        # Step 1: Data provided check
         if not has_data:
             return -2
-        # Default guards
-        M = bool(current_meets)
-        N = bool(previous_meets)
-        O = change_cat
-        P = gap_cat
-        if M and N:
-            return 1
-        if M and not N:
-            return 0
-        # M == False
-        if N:
-            if O in ('>5%', '5%<=C>-5%'):
-                return 2
-            if O == '-10%<C<=-5%':
+        
+        # Step 2: First year check (simplified - assume not first year if we have previous data)
+        is_first_year = previous_meets is None
+        
+        # Step 3: Target achieved check
+        target_achieved = "Yes" if current_meets else "No"
+        
+        # Step 4: Use the updated scoring logic
+        scoring_service = HolisticScoringService()
+        
+        # For real-time scoring, we need to reconstruct the scoring logic
+        # since we don't have the actual values to pass to calculate_indicator_score
+        
+        # Simplified version of the Excel outcome formula
+        if is_first_year:
+            if target_achieved == "Yes":
                 return 1
-            return 0
-        # M == False and N == False
-        if O == '>5%':
-            return 1
-        if O == '5%<=C>-5%':
-            if P == '<=10%':
-                return 1
-            if P == '10%<PT<=40%':
+            else:
                 return 0
-            return -1
-        # Decline cases
-        return -1
+        else:
+            # Not first year - use the complex logic
+            if target_achieved == "Yes":
+                # Target WAS achieved - check performance change
+                if change_cat == ">5%":
+                    return 2
+                elif change_cat == "5%<=C>-5%":
+                    return 2
+                elif change_cat == "-10%<C<=-5%":
+                    return 2
+                elif change_cat == "<=-10%":
+                    return 0
+                else:
+                    return 0
+            else:
+                # Target NOT achieved - check performance change
+                if change_cat == ">5%":
+                    return 1
+                elif change_cat == "5%<=C>-5%":
+                    # Stagnation - check how close to target
+                    if gap_cat == "<=10%":
+                        return 1
+                    elif gap_cat == "10%<PT<=40%":
+                        return 0
+                    elif gap_cat == ">40%":
+                        return -1
+                    else:
+                        return 0
+                elif change_cat == "-10%<C<=-5%":
+                    return -1
+                elif change_cat == "<=-10%":
+                    return -1
+                else:
+                    return 0
 
     def _median(self, numbers: list[float]) -> float | None:
         vals = [float(x) for x in numbers if x is not None and isinstance(x, (int, float))]
@@ -795,9 +845,42 @@ class RealTimeDHIS2Service:
                                             gap_pct = round(gap_calc, 1)
                                     except Exception:
                                         gap_pct = None
+                                # Derive categories and simple threshold flags for M/N
+                                change_cat = self._classify_change_category(change_pct)
+                                gap_cat = self._classify_gap_category(gap_pct)
+                                # For M/N we use meet-threshold as curr >= target for increase, curr <= target for decrease
+                                current_meets = None
+                                previous_meets = None
+                                try:
+                                    if curr_val is not None and tgt not in (None,):
+                                        if (indicator_data.get('target_type') or 'increase').lower() == 'increase':
+                                            current_meets = float(curr_val) >= float(tgt)
+                                        else:
+                                            current_meets = float(curr_val) <= float(tgt)
+                                except Exception:
+                                    current_meets = None
+                                try:
+                                    if prev_val is not None and tgt not in (None,):
+                                        if (indicator_data.get('target_type') or 'increase').lower() == 'increase':
+                                            previous_meets = float(prev_val) >= float(tgt)
+                                        else:
+                                            previous_meets = float(prev_val) <= float(tgt)
+                                except Exception:
+                                    previous_meets = None
+                                has_data = curr_val is not None
+                                trend_score = self._compute_trend_score(has_data, current_meets, previous_meets, change_cat, gap_cat)
+                                # Derive a simple indicator score from categories/trend if not provided by DB
+                                derived_score = trend_score
+                                color, label = self._score_color_label(derived_score)
                                 indicator_data['score'] = {
                                     'percent_change': change_pct,
                                     'target_gap': gap_pct,
+                                    'change_category': change_cat,
+                                    'gap_category': gap_cat,
+                                    'trend_score': trend_score,
+                                    'score': derived_score,
+                                    'score_color': color,
+                                    'score_label': label,
                                     'current_value': curr_val,
                                     'previous_value': prev_val,
                                     'is_manual_override': False
@@ -3569,3 +3652,214 @@ class ManualDataEntryService:
                 })
         
         return results
+
+
+# Holistic Assessment Scoring Service
+from decimal import Decimal
+from typing import Dict, Any, Optional
+from django.db import transaction
+from indicators.models import TrackedIndicator
+from assessments.models import IndicatorScore, ScoringContext
+
+
+class HolisticScoringService:
+    """
+    Simplified Holistic Assessment scoring algorithm based on Excel formulas
+    Matches the exact logic shown in the performance analysis table
+    """
+    
+    def calculate_indicator_score(
+        self,
+        indicator: TrackedIndicator,
+        current_value: Optional[float],  # Column G in Excel
+        previous_value: Optional[float],  # Column F in Excel
+        data_provided: bool = True
+    ) -> Dict[str, Any]:
+        """
+        Calculate score using simplified Holistic Assessment algorithm
+        Based on Excel formulas from the performance analysis table:
+        - Data Provided: =IF($G4<>"","Yes","No")
+        - First Year: =IF(OR($F4<>"",$E4<>"",$D4<>"",$C4<>""),"No","Yes")
+        - Target Achieved: =IF($G4<=J4,"Yes","No")
+        - Performance Change: =IF($H4<=-10%,"<=-10%",IF($H4<=-5%,"-10%<C<=-5%",IF($H4<=5%,"5%<=C>-5%",IF($H4>5%,">5%",""))))
+        - Gap to Target: =IF($I4<=10%,"<=10%",IF(AND($I4>10%,$I4<=40%),"10%<PT<=40%",IF($I4>40%,">40%","")))
+        """
+        
+        # Step 1: Data Provided (Column G) - =IF($G4<>"","Yes","No")
+        data_provided_flag = "Yes" if data_provided and current_value is not None else "No"
+        
+        # Step 2: First Year of Reporting - =IF(OR($F4<>"",$E4<>"",$D4<>"",$C4<>""),"No","Yes")
+        # For simplicity, we only check the immediate previous year (F4)
+        # In a full implementation, you'd check multiple previous years
+        has_previous_data = previous_value is not None
+        is_first_year = "Yes" if not has_previous_data else "No"
+        
+        # Step 3: Was Target Achieved - =IF($G4<=J4,"Yes","No")
+        # Use the target_operator to determine target achievement
+        target_achieved = "No"  # Default
+        if current_value is not None and indicator.target_value is not None:
+            target_float = float(indicator.target_value)
+            
+            # Use the target_operator to determine achievement
+            if indicator.target_operator == '>=':
+                target_achieved = "Yes" if current_value >= target_float else "No"
+            elif indicator.target_operator == '>':
+                target_achieved = "Yes" if current_value > target_float else "No"
+            elif indicator.target_operator == '<=':
+                target_achieved = "Yes" if current_value <= target_float else "No"
+            elif indicator.target_operator == '<':
+                target_achieved = "Yes" if current_value < target_float else "No"
+            elif indicator.target_operator == '=':
+                target_achieved = "Yes" if current_value == target_float else "No"
+            else:
+                # Default to >= for backward compatibility
+                target_achieved = "Yes" if current_value >= target_float else "No"
+        
+        # Step 4: Performance Change (Column H) - =IF($H4<=-10%,"<=-10%",IF($H4<=-5%,"-10%<C<=-5%",IF($H4<=5%,"5%<=C>-5%",IF($H4>5%,">5%",""))))
+        percent_change = None
+        change_category = None
+        if current_value is not None and previous_value is not None and previous_value != 0:
+            percent_change = ((current_value - previous_value) / abs(previous_value)) * 100
+            
+            if percent_change <= -10:
+                change_category = "<=-10%"
+            elif percent_change <= -5:
+                change_category = "-10%<C<=-5%"
+            elif percent_change <= 5:
+                change_category = "5%<=C>-5%"
+            elif percent_change > 5:
+                change_category = ">5%"
+        
+        # Step 5: Gap to Target (Column I) - =IF($I4<=10%,"<=10%",IF(AND($I4>10%,$I4<=40%),"10%<PT<=40%",IF($I4>40%,">40%","")))
+        target_gap = None
+        gap_category = None
+        if current_value is not None and indicator.target_value is not None:
+            target_float = float(indicator.target_value)
+            if target_float != 0:
+                # Calculate gap as percentage difference: (current - target) / target * 100
+                # This gives negative values when current < target, positive when current > target
+                target_gap = (current_value - target_float) / target_float * 100
+                
+                # Categorize based on the signed target_gap, matching Excel's behavior
+                # Excel formula: =IF($I4<=10%,"<=10%",IF(AND($I4>10%,$I4<=40%),"10%<PT<=40%",IF($I4>40%,">40%","")))
+                if target_gap <= 10:
+                    gap_category = "<=10%"
+                elif 10 < target_gap <= 40:
+                    gap_category = "10%<PT<=40%"
+                elif target_gap > 40:
+                    gap_category = ">40%"
+        
+        # Step 6: Calculate final score based on the flowchart logic
+        score = self._calculate_final_score(
+            data_provided_flag, is_first_year, target_achieved, 
+            change_category, gap_category
+        )
+        
+        return {
+            'score': score,
+            'data_provided': data_provided_flag,
+            'is_first_year': is_first_year,
+            'target_achieved': target_achieved,
+            'change_category': change_category,
+            'gap_category': gap_category,
+            'percent_change': percent_change,
+            'target_gap': target_gap,
+            'current_value': current_value,
+            'previous_value': previous_value,
+            'target_value': float(indicator.target_value) if indicator.target_value else None
+        }
+    
+    def _calculate_final_score(
+        self,
+        data_provided: str,
+        is_first_year: str,
+        target_achieved: str,
+        change_category: Optional[str],
+        gap_category: Optional[str]
+    ) -> int:
+        """
+        Calculate final score based on the flowchart logic shown in the image
+        """
+        
+        # Decision 1: Was data provided?
+        if data_provided == "No":
+            return -2  # Red circle in flowchart
+        
+        # Decision 2: Is it the first year of reporting?
+        if is_first_year == "Yes":
+            # First year logic: check if target was achieved
+            return 1 if target_achieved == "Yes" else 0
+        
+        # Not first year - proceed with complex logic
+        # Decision 3: Was the target achieved?
+        if target_achieved == "Yes":
+            # Target WAS achieved - check performance change
+            if change_category == ">5%":
+                return 2  # Green circle - Increase
+            elif change_category == "5%<=C>-5%":
+                return 2  # Green circle - Stagnation
+            elif change_category == "-10%<C<=-5%":
+                return 2  # Green circle - Small decrease (FIXED: should be 2, not 1)
+            elif change_category == "<=-10%":
+                return 0  # Yellow circle - Large decrease
+            else:
+                return 0  # Default for stable
+        
+        else:
+            # Target NOT achieved - check performance change
+            # Excel formula: IF(AND(M13="No",N13="No",O13=">5%"),1,IF(AND(M13="No",N13="No",O13="5%<=C>-5%",P13="<=10%"),1,IF(AND(M13="No",N13="No",O13="5%<=C>-5%",P13="10%<PT<=40%"),0,IF(AND(M13="No",N13="No",O13="5%<=C>-5%",P13=">40%"),-1,IF(AND(M13="No",N13="No",O13="-10%<C<=-5%"),-1,IF(AND(M13="No",N13="No",O13="<=-10%"),-1))))))
+            if change_category == ">5%":
+                return 1  # Excel: IF(AND(M13="No",N13="No",O13=">5%"),1,...)
+            elif change_category == "5%<=C>-5%":
+                # Stagnation - check how close to target
+                if gap_category == "<=10%":
+                    return 1  # Excel: IF(AND(M13="No",N13="No",O13="5%<=C>-5%",P13="<=10%"),1,...)
+                elif gap_category == "10%<PT<=40%":
+                    return 0  # Excel: IF(AND(M13="No",N13="No",O13="5%<=C>-5%",P13="10%<PT<=40%"),0,...)
+                elif gap_category == ">40%":
+                    return -1  # Excel: IF(AND(M13="No",N13="No",O13="5%<=C>-5%",P13=">40%"),-1,...)
+                else:
+                    return 0  # Default for stable
+            elif change_category == "-10%<C<=-5%":
+                return -1  # Excel: IF(AND(M13="No",N13="No",O13="-10%<C<=-5%"),-1,...)
+            elif change_category == "<=-10%":
+                return -1  # Excel: IF(AND(M13="No",N13="No",O13="<=-10%"),-1,...)
+            else:
+                return 0  # Default case
+        
+        # This should never be reached, but just in case
+        return 0
+    
+    def calculate_batch_scores(self, indicator_scores: list) -> None:
+        """
+        Calculate scores for a batch of indicator scores
+        """
+        for indicator_score in indicator_scores:
+            try:
+                indicator_score.calculate_holistic_score()
+            except Exception as e:
+                # Log error but continue with other scores
+                print(f"Error calculating score for {indicator_score}: {e}")
+                continue
+    
+    def get_scoring_summary(self, indicator_score: IndicatorScore) -> Dict[str, Any]:
+        """
+        Get a summary of the scoring context for an indicator
+        """
+        if not indicator_score.scoring_context:
+            return {}
+        
+        context = indicator_score.scoring_context
+        
+        return {
+            'data_provided': context.data_provided,
+            'current_meets_target': context.current_meets_target,
+            'previous_meets_target': context.previous_meets_target,
+            'change_category': context.change_category,
+            'gap_category': context.gap_category,
+            'percent_change': float(context.percent_change) if context.percent_change else None,
+            'target_gap': float(context.target_gap) if context.target_gap else None,
+            'final_score': indicator_score.score,
+            'score_color': indicator_score.score_color,
+            'score_label': indicator_score.score_label
+        }

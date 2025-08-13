@@ -179,41 +179,41 @@ class TrackedIndicatorAdmin(ImportExportModelAdmin):
     resource_class = TrackedIndicatorResource
     
     list_display = [
-        'name', 'dhis2_uid', 'indicator_type', 'is_active', 'target_value',
-        'target_type', 'last_sync', 'sync_status'
+        'name', 'indicator_number', 'dhis2_uid', 'indicator_type', 'is_active', 
+        'target_value', 'target_operator', 'target_display', 'display_order'
     ]
     list_filter = [
-        'indicator_type', 'is_active', 'target_type', 'created_at', 'updated_at'
+        'indicator_type', 'is_active', 'target_type', 'target_operator', 
+        'target_measurement_type', 'created_at', 'updated_at'
     ]
-    search_fields = ['name', 'dhis2_uid', 'description', 'dhis2_name']
+    search_fields = ['name', 'dhis2_uid', 'description', 'dhis2_name', 'indicator_number']
     readonly_fields = [
         'created_at', 'updated_at', 'last_sync', 'dhis2_name', 'dhis2_description'
     ]
-    ordering = ['name']
+    ordering = ['display_order', 'name']
     
     form = TrackedIndicatorAdminForm
 
     fieldsets = (
         ('Basic Information', {
-            'fields': ('name', 'data_source', 'dhis2_uid', 'indicator_type', 'is_active', 'description')
+            'fields': ('name', 'indicator_number', 'data_source', 'dhis2_uid', 'indicator_type', 'is_active', 'description')
         }),
         ('Excel Structure', {
-            'fields': ('indicator_number', 'display_order'),
+            'fields': ('display_order',),
             'classes': ('collapse',)
         }),
         ('Indicator Definition', {
-            'fields': ('numerator', 'denominator', 'source_of_data'),
+            'fields': ('numerator', 'denominator', 'formula', 'source_of_data'),
+        }),
+        ('Target Configuration', {
+            'fields': ('target_value', 'target_display', 'target_type', 'target_operator', 'target_measurement_type')
+        }),
+        ('Scoring Configuration', {
+            'fields': ('min_score', 'max_score')
         }),
         ('DHIS2 Metadata', {
             'fields': ('dhis2_name', 'dhis2_description', 'last_sync'),
             'classes': ('collapse',)
-        }),
-        ('Formula and Calculation', {
-            'fields': ('formula',),
-            'classes': ('collapse',)
-        }),
-        ('Target and Scoring', {
-            'fields': ('target_value', 'target_display', 'target_type', 'min_score', 'max_score')
         }),
         ('Timestamps', {
             'fields': ('created_at', 'updated_at'),

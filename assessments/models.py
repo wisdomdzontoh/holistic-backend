@@ -519,6 +519,14 @@ class IndicatorScore(models.Model):
         related_name='score_overrides'
     )
     
+    # Holistic Assessment scoring context
+    scoring_context = models.OneToOneField(
+        'ScoringContext', 
+        on_delete=models.CASCADE, 
+        null=True, 
+        blank=True
+    )
+    
     # Timestamps
     created_at = models.DateTimeField(auto_now_add=True)
     updated_at = models.DateTimeField(auto_now=True)
@@ -543,6 +551,13 @@ class IndicatorScore(models.Model):
         """Calculate the score based on performance metrics"""
         if self.is_manual_override:
             return  # Don't recalculate manual overrides
+        
+        # Use Holistic Assessment scoring if available
+        try:
+            self.calculate_holistic_score()
+            return
+        except AttributeError:
+            pass  # Fall back to regular scoring
         
         # Store old values for audit
         old_score = self.score
@@ -631,6 +646,84 @@ class IndicatorScore(models.Model):
             indicator_id=str(self.indicator.id),
             objective_id=str(self.objective.id)
         )
+    
+    def calculate_holistic_score(self):
+        """Calculate score using the Holistic Assessment algorithm"""
+        from assessments.services import HolisticScoringService
+        
+        service = HolisticScoringService()
+        
+        # Get indicator configuration
+        indicator = self.indicator
+        
+        # Determine if this is first year
+        is_first_year = self._is_first_year_reporting()
+        
+        # Calculate score
+        result = service.calculate_indicator_score(
+            indicator=indicator,
+            current_value=float(self.current_value) if self.current_value else None,
+            previous_value=float(self.previous_value) if self.previous_value else None,
+            data_provided=self.current_value is not None
+        )
+        
+        # Update score
+        self.score = result['score']
+        
+        # Create or update scoring context
+        if not self.scoring_context:
+            self.scoring_context = ScoringContext.objects.create(
+                indicator_score=self
+            )
+        
+        # Map the simplified scoring result to scoring context
+        self.scoring_context.data_provided = result['data_provided'] == "Yes"
+        self.scoring_context.current_meets_target = result['target_achieved'] == "Yes"
+        self.scoring_context.previous_meets_target = None  # Not used in simplified algorithm
+        self.scoring_context.change_category = result['change_category']
+        self.scoring_context.gap_category = result['gap_category']
+        self.scoring_context.percent_change = result['percent_change']
+        self.scoring_context.target_gap = result['target_gap']
+        self.scoring_context.save()
+        
+        # Update color and label based on score
+        self.score_color = self._get_score_color(result['score'])
+        self.score_label = self._get_score_label(result['score'])
+        
+        self.save()
+    
+    def _is_first_year_reporting(self) -> bool:
+        """Determine if this is the first year of reporting"""
+        # Check if there's a previous assessment period
+        previous_scores = IndicatorScore.objects.filter(
+            indicator=self.indicator,
+            org_unit_id=self.org_unit_id,
+            assessment_period__start_date__lt=self.assessment_period.start_date
+        ).exists()
+        
+        return not previous_scores
+    
+    def _get_score_color(self, score: int) -> str:
+        """Get color based on score"""
+        color_map = {
+            2: '#28a745',   # Green
+            1: '#90EE90',   # Light Green
+            0: '#ffc107',   # Yellow
+            -1: '#fd7e14',  # Orange
+            -2: '#dc3545'   # Red
+        }
+        return color_map.get(score, '#6c757d')
+    
+    def _get_score_label(self, score: int) -> str:
+        """Get label based on score"""
+        label_map = {
+            2: 'Excellent',
+            1: 'Good',
+            0: 'Satisfactory',
+            -1: 'Needs Improvement',
+            -2: 'Critical'
+        }
+        return label_map.get(score, 'No Data')
     
     def apply_manual_override(self, new_score, user, reason=""):
         """
@@ -768,6 +861,55 @@ class IndicatorScore(models.Model):
             indicator_id=str(self.indicator.id),
             objective_id=str(self.objective.id)
         )
+
+
+class ScoringContext(models.Model):
+    """
+    Stores the scoring context for each indicator assessment
+    """
+    indicator_score = models.OneToOneField('IndicatorScore', on_delete=models.CASCADE)
+    
+    # Data availability flag (L)
+    data_provided = models.BooleanField(default=True)
+    
+    # Current and previous status flags (M, N)
+    current_meets_target = models.BooleanField(null=True)
+    previous_meets_target = models.BooleanField(null=True)
+    
+    # Change categories (O)
+    change_category = models.CharField(
+        max_length=20, choices=[
+            ('>5%', 'Improvement >5%'),
+            ('5%<=C>-5%', 'Stable (-5% to +5%)'),
+            ('-10%<C<=-5%', 'Small decline (-10% to -5%)'),
+            ('<=-10%', 'Large decline (≤-10%)')
+        ], null=True
+    )
+    
+    # Gap category (P)
+    gap_category = models.CharField(
+        max_length=20, choices=[
+            ('<=10%', 'Close to target (≤10%)'),
+            ('10%<PT<=40%', 'Moderately far (10-40%)'),
+            ('>40%', 'Far from target (>40%)')
+        ], null=True
+    )
+    
+    # Calculated metrics
+    percent_change = models.DecimalField(max_digits=8, decimal_places=2, null=True)
+    target_gap = models.DecimalField(max_digits=8, decimal_places=2, null=True)
+    
+    # Metadata
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    
+    class Meta:
+        db_table = 'scoring_contexts'
+        verbose_name = 'Scoring Context'
+        verbose_name_plural = 'Scoring Contexts'
+    
+    def __str__(self):
+        return f"Scoring Context for {self.indicator_score}"
 
 
 class ObjectiveScore(models.Model):

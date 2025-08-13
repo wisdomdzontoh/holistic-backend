@@ -5,7 +5,7 @@ from django.utils.safestring import mark_safe
 from django.utils import timezone
 from .models import (
     DataSyncLog, IndicatorData, IndicatorScore, ObjectiveScore, 
-    SectorScore, SavedAssessment, AuditLog, ConflictResolution
+    SectorScore, SavedAssessment, AuditLog, ConflictResolution, ScoringContext
 )
 
 
@@ -529,3 +529,49 @@ class ConflictResolutionAdmin(admin.ModelAdmin):
         
         return response
     export_conflicts.short_description = "Export selected conflicts to CSV"
+
+
+@admin.register(ScoringContext)
+class ScoringContextAdmin(admin.ModelAdmin):
+    """
+    Admin interface for scoring contexts
+    """
+    list_display = [
+        'indicator_score', 'data_provided', 'current_meets_target', 
+        'previous_meets_target', 'change_category', 'gap_category', 'created_at'
+    ]
+    list_filter = [
+        'data_provided', 'current_meets_target', 'previous_meets_target',
+        'change_category', 'gap_category', 'created_at'
+    ]
+    search_fields = [
+        'indicator_score__indicator__name', 
+        'indicator_score__org_unit_name',
+        'indicator_score__assessment_period__name'
+    ]
+    readonly_fields = [
+        'indicator_score', 'created_at', 'updated_at'
+    ]
+    ordering = ['-created_at']
+    
+    fieldsets = (
+        ('Scoring Context', {
+            'fields': ('indicator_score',)
+        }),
+        ('Data Availability', {
+            'fields': ('data_provided',)
+        }),
+        ('Target Achievement', {
+            'fields': ('current_meets_target', 'previous_meets_target')
+        }),
+        ('Performance Categories', {
+            'fields': ('change_category', 'gap_category')
+        }),
+        ('Calculated Metrics', {
+            'fields': ('percent_change', 'target_gap')
+        }),
+        ('Timestamps', {
+            'fields': ('created_at', 'updated_at'),
+            'classes': ('collapse',)
+        }),
+    )
