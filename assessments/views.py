@@ -1486,23 +1486,33 @@ class HolisticAssessmentViewSet(viewsets.ViewSet):
     
     @action(detail=False, methods=['post'])
     def export_excel(self, request):
-        """Generate and return a path/URL for a formatted Excel export that mirrors the UI."""
+        """Generate and return Excel file content directly for download."""
         try:
             # Reuse the fetch logic to get payload (no DB write)
             serializer = HolisticAssessmentRequestSerializer(data=request.data)
             serializer.is_valid(raise_exception=True)
             payload = self.realtime_service.fetch_holistic_assessment_data(request, serializer.validated_data)
             file_path = self.realtime_service.generate_holistic_excel(payload)
-            from django.conf import settings
-            media_url = getattr(settings, 'MEDIA_URL', '/media/')
-            # Build absolute URL so the frontend can open the file directly
-            rel_path = file_path.split('media')[-1].lstrip('\\/')
-            absolute_url = request.build_absolute_uri(f"{media_url}{rel_path.replace('\\', '/')}")
-            return Response({
-                'status': 'success',
-                'file_path': file_path,
-                'file_url': absolute_url
-            })
+            
+            # Read the file content
+            import os
+            if os.path.exists(file_path):
+                with open(file_path, 'rb') as f:
+                    file_content = f.read()
+                
+                # Generate filename
+                import datetime
+                timestamp = datetime.datetime.now().strftime('%Y%m%d-%H%M%S')
+                filename = f"holistic-assessment-{timestamp}.xlsx"
+                
+                # Return file as response
+                from django.http import HttpResponse
+                response = HttpResponse(file_content, content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
+                response['Content-Disposition'] = f'attachment; filename="{filename}"'
+                return response
+            else:
+                return Response({'status': 'error', 'message': 'Generated file not found'}, status=404)
+                
         except ValidationError as e:
             return Response({'status': 'error', 'message': str(e)}, status=400)
         except Exception as e:
