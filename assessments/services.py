@@ -1648,6 +1648,7 @@ class AssessmentSaveService:
                 org_unit_id = assessment_data.get('org_unit_id')
                 org_unit_name = assessment_data.get('org_unit_name', '')
                 periods = assessment_data.get('periods', [])
+                period_codes = assessment_data.get('period_codes', [])
                 user_notes = assessment_data.get('user_notes', '')
                 
                 # Get the current user from the request
@@ -1661,6 +1662,12 @@ class AssessmentSaveService:
                 
                 # Create the saved assessment record
                 from .models import SavedAssessment
+                
+                # Include period_codes in metadata for proper reconstruction
+                metadata = assessment_data.get('metadata', {})
+                if period_codes:
+                    metadata['period_codes'] = period_codes
+                
                 saved_assessment = SavedAssessment.objects.create(
                     name=assessment_name,
                     org_unit_id=org_unit_id,
@@ -1669,7 +1676,7 @@ class AssessmentSaveService:
                     user_notes=user_notes,
                     indicator_data=assessment_data.get('indicator_data', {}),
                     calculated_scores=assessment_data.get('calculated_scores', {}),
-                    metadata=assessment_data.get('metadata', {}),
+                    metadata=metadata,
                     created_by=current_user,
                     session_key=request.session.session_key if hasattr(request, 'session') else ''
                 )

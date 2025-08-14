@@ -469,6 +469,11 @@ class HolisticAssessmentSaveSerializer(serializers.Serializer):
         required=True,
         help_text="List of periods used in the assessment"
     )
+    period_codes = serializers.ListField(
+        child=serializers.CharField(max_length=20),
+        required=False,
+        help_text="List of period codes corresponding to the periods"
+    )
     indicator_data = serializers.DictField(
         required=True,
         help_text="Indicator data with values for each period"
