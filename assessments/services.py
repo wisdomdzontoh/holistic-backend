@@ -697,79 +697,98 @@ class RealTimeDHIS2Service:
                                     'dhis2_value': None,
                                     'manual_override': None
                                 }
-                        # Compute percent_change and target_gap for latest vs previous period
-                        try:
-                            if isinstance(periods, list) and len(periods) >= 1:
-                                last_key = periods[-1]  # This is now a period code
-                                prev_key = periods[-2] if len(periods) > 1 else None
-                                curr_val = indicator_data['data_values'].get(last_key, {}).get('value')
-                                prev_val = indicator_data['data_values'].get(prev_key, {}).get('value') if prev_key else None
-                                change_pct = None
-                                if prev_val not in (None, 0, 0.0) and curr_val is not None:
-                                    try:
-                                        change = ((float(curr_val) - float(prev_val)) / abs(float(prev_val))) * 100.0
-                                        if change == float('inf') or change == float('-inf'):
-                                            change_pct = None
-                                        else:
-                                            change_pct = round(change, 1)
-                                    except Exception:
+                                                        # Compute percent_change and target_gap for latest vs previous period
+                                try:
+                                    if isinstance(periods, list) and len(periods) >= 1:
+                                        last_key = periods[-1]  # This is now a period code
+                                        prev_key = periods[-2] if len(periods) > 1 else None
+                                        curr_val = indicator_data['data_values'].get(last_key, {}).get('value')
+                                        prev_val = indicator_data['data_values'].get(prev_key, {}).get('value') if prev_key else None
                                         change_pct = None
-                                gap_pct = None
-                                tgt = indicator_data.get('target_value')
-                                # Define target_type outside the conditional block
-                                target_type = (indicator_data.get('target_type') or 'increase').lower()
-                                if tgt not in (None, 0, 0.0) and curr_val is not None:
-                                    try:
-                                        ratio = float(curr_val) / float(tgt)
-                                        gap_calc = (ratio - 1.0) * 100.0 if target_type == 'increase' else (1.0 - ratio) * 100.0
-                                        if gap_calc == float('inf') or gap_calc == float('-inf'):
-                                            gap_pct = None
-                                        else:
-                                            gap_pct = round(gap_calc, 1)
-                                    except Exception:
+                                        if prev_val not in (None, 0, 0.0) and curr_val is not None:
+                                            try:
+                                                change = ((float(curr_val) - float(prev_val)) / abs(float(prev_val))) * 100.0
+                                                if change == float('inf') or change == float('-inf'):
+                                                    change_pct = None
+                                                else:
+                                                    change_pct = round(change, 1)
+                                            except Exception:
+                                                change_pct = None
                                         gap_pct = None
-                                # Derive categories and simple threshold flags for M/N
-                                change_cat = self._classify_change_category(change_pct, target_type)
-                                gap_cat = self._classify_gap_category(gap_pct)
-                                # For M/N we use meet-threshold as curr >= target for increase, curr <= target for decrease
-                                current_meets = None
-                                previous_meets = None
-                                try:
-                                    if curr_val is not None and tgt not in (None,):
-                                        if (indicator_data.get('target_type') or 'increase').lower() == 'increase':
-                                            current_meets = float(curr_val) >= float(tgt)
-                                        else:
-                                            current_meets = float(curr_val) <= float(tgt)
-                                except Exception:
-                                    current_meets = None
-                                try:
-                                    if prev_val is not None and tgt not in (None,):
-                                        if (indicator_data.get('target_type') or 'increase').lower() == 'increase':
-                                            previous_meets = float(prev_val) >= float(tgt)
-                                        else:
-                                            previous_meets = float(prev_val) <= float(tgt)
-                                except Exception:
-                                    previous_meets = None
-                                has_data = curr_val is not None
-                                trend_score = self._compute_trend_score(has_data, current_meets, previous_meets, change_cat, gap_cat)
-                                # Derive a simple indicator score from categories/trend if not provided by DB
-                                derived_score = trend_score
-                                color, label = self._score_color_label(derived_score)
-                                indicator_data['score'] = {
-                                    'percent_change': change_pct,
-                                    'target_gap': gap_pct,
-                                    'change_category': change_cat,
-                                    'gap_category': gap_cat,
-                                    'trend_score': trend_score,
-                                    'score': derived_score,
-                                    'score_color': color,
-                                    'score_label': label,
-                                    'current_value': curr_val,
-                                    'previous_value': prev_val,
-                                    'is_manual_override': False
-                                }
-                        except Exception as e:
-                            logger.warning(f"Failed computing change/gap for indicator {indicator.id}: {e}")
+                                        # Calculate the correct target value for gap analysis
+                                        # For range indicators, use Excel's formula: (Upper Limit - Current Value) / Current Value
+                                        # For other indicators, use the target_value
+                                        tgt = indicator_data.get('target_value')
+                                        target_format = indicator_data.get('target_format', 'SINGLE')
+                                        target_upper = indicator_data.get('target_upper_limit')
+                                        
+                                        # Define target_type outside the conditional block
+                                        target_type = (indicator_data.get('target_type') or 'increase').lower()
+                                        if curr_val is not None and curr_val != 0:
+                                            try:
+                                                if target_format == 'RANGE' and target_upper is not None:
+                                                    # For range indicators: (Target upper limit - Current Value) / Current Value * 100
+                                                    gap_calc = ((float(target_upper) - float(curr_val)) / float(curr_val)) * 100.0
+                                                else:
+                                                    # For non-range indicators
+                                                    if tgt not in (None, 0, 0.0):
+                                                        if target_type == 'increase':
+                                                            # For increase indicators: (Current Value - Target Value) / Target Value * 100
+                                                            gap_calc = ((float(curr_val) - float(tgt)) / float(tgt)) * 100.0
+                                                        else:
+                                                            # For decrease indicators: (Target Value - Current Value) / Current Value * 100
+                                                            gap_calc = ((float(tgt) - float(curr_val)) / float(curr_val)) * 100.0
+                                                    else:
+                                                        gap_calc = None
+                                                
+                                                if gap_calc is not None and gap_calc != float('inf') and gap_calc != float('-inf'):
+                                                    gap_pct = round(gap_calc, 1)
+                                                else:
+                                                    gap_pct = None
+                                            except Exception:
+                                                gap_pct = None
+                                        # Derive categories and simple threshold flags for M/N
+                                        change_cat = self._classify_change_category(change_pct, target_type)
+                                        gap_cat = self._classify_gap_category(gap_pct)
+                                        # For M/N we use meet-threshold as curr >= target for increase, curr <= target for decrease
+                                        current_meets = None
+                                        previous_meets = None
+                                        try:
+                                            if curr_val is not None and tgt not in (None,):
+                                                if (indicator_data.get('target_type') or 'increase').lower() == 'increase':
+                                                    current_meets = float(curr_val) >= float(tgt)
+                                                else:
+                                                    current_meets = float(curr_val) <= float(tgt)
+                                        except Exception:
+                                            current_meets = None
+                                        try:
+                                            if prev_val is not None and tgt not in (None,):
+                                                if (indicator_data.get('target_type') or 'increase').lower() == 'increase':
+                                                    previous_meets = float(prev_val) >= float(tgt)
+                                                else:
+                                                    previous_meets = float(prev_val) <= float(tgt)
+                                        except Exception:
+                                            previous_meets = None
+                                        has_data = curr_val is not None
+                                        trend_score = self._compute_trend_score(has_data, current_meets, previous_meets, change_cat, gap_cat)
+                                        # Derive a simple indicator score from categories/trend if not provided by DB
+                                        derived_score = trend_score
+                                        color, label = self._score_color_label(derived_score)
+                                        indicator_data['score'] = {
+                                            'percent_change': change_pct,
+                                            'target_gap': gap_pct,
+                                            'change_category': change_cat,
+                                            'gap_category': gap_cat,
+                                            'trend_score': trend_score,
+                                            'score': derived_score,
+                                            'score_color': color,
+                                            'score_label': label,
+                                            'current_value': curr_val,
+                                            'previous_value': prev_val,
+                                            'is_manual_override': False
+                                        }
+                                except Exception as e:
+                                    logger.warning(f"Failed computing change/gap for indicator {indicator.id}: {e}")
                         
                         objective_data['indicators'].append(indicator_data)
                     
@@ -872,17 +891,36 @@ class RealTimeDHIS2Service:
                                     except Exception:
                                         change_pct = None
                                 gap_pct = None
+                                # Calculate the correct target value for gap analysis
+                                # For range indicators, use Excel's formula: (Upper Limit - Current Value) / Current Value
+                                # For other indicators, use the target_value
                                 tgt = indicator_data.get('target_value')
+                                target_format = indicator_data.get('target_format', 'SINGLE')
+                                target_upper = indicator_data.get('target_upper_limit')
+                                
                                 # Define target_type outside the conditional block
                                 target_type = (indicator_data.get('target_type') or 'increase').lower()
-                                if tgt not in (None, 0, 0.0) and curr_val is not None:
+                                if curr_val is not None and curr_val != 0:
                                     try:
-                                        ratio = float(curr_val) / float(tgt)
-                                        gap_calc = (ratio - 1.0) * 100.0 if target_type == 'increase' else (1.0 - ratio) * 100.0
-                                        if gap_calc == float('inf') or gap_calc == float('-inf'):
-                                            gap_pct = None
+                                        if target_format == 'RANGE' and target_upper is not None:
+                                            # For range indicators: (Target upper limit - Current Value) / Current Value * 100
+                                            gap_calc = ((float(target_upper) - float(curr_val)) / float(curr_val)) * 100.0
                                         else:
+                                            # For non-range indicators
+                                            if tgt not in (None, 0, 0.0):
+                                                if target_type == 'increase':
+                                                    # For increase indicators: (Current Value - Target Value) / Target Value * 100
+                                                    gap_calc = ((float(curr_val) - float(tgt)) / float(tgt)) * 100.0
+                                                else:
+                                                    # For decrease indicators: (Target Value - Current Value) / Current Value * 100
+                                                    gap_calc = ((float(tgt) - float(curr_val)) / float(curr_val)) * 100.0
+                                            else:
+                                                gap_calc = None
+                                        
+                                        if gap_calc is not None and gap_calc != float('inf') and gap_calc != float('-inf'):
                                             gap_pct = round(gap_calc, 1)
+                                        else:
+                                            gap_pct = None
                                     except Exception:
                                         gap_pct = None
                                 # Derive categories and simple threshold flags for M/N
