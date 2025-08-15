@@ -678,9 +678,12 @@ class RealTimeDHIS2Service:
                                         indicator, org_unit_ids[0], period_code
                                     )
                                     clean_value = self._clean_numeric_value(value)
+                                    # For DHIS2 data, if no value is found, assign 0 to help with scoring
+                                    # This ensures proper scoring for increase/decrease indicators
+                                    final_value = clean_value if clean_value is not None else 0
                                     indicator_data['data_values'][period_code] = {
-                                        'value': clean_value,
-                                        'dhis2_value': clean_value,
+                                        'value': final_value,
+                                        'dhis2_value': clean_value,  # Keep original for reference
                                         'manual_override': None
                                     }
                                 else:
@@ -855,9 +858,12 @@ class RealTimeDHIS2Service:
                                         indicator, org_unit_ids[0], period
                                     )
                                     clean_value = self._clean_numeric_value(value)
+                                    # For DHIS2 data, if no value is found, assign 0 to help with scoring
+                                    # This ensures proper scoring for increase/decrease indicators
+                                    final_value = clean_value if clean_value is not None else 0
                                     indicator_data['data_values'][period] = {
-                                        'value': clean_value,
-                                        'dhis2_value': clean_value,
+                                        'value': final_value,
+                                        'dhis2_value': clean_value,  # Keep original for reference
                                         'manual_override': None
                                     }
                                 else:
@@ -1350,7 +1356,7 @@ class RealTimeDHIS2Service:
                     logger.debug(f"Alternative period {alt_period} failed: {str(e)}")
                     continue
             
-            logger.warning(f"All alternative period formats failed for {indicator.name}")
+            logger.debug(f"All alternative period formats failed for {indicator.name}")
             return None
             
         except Exception as e:
@@ -1361,7 +1367,7 @@ class RealTimeDHIS2Service:
         """
         Fetch data for a single indicator without storing in database
         """
-        logger.info(f"Fetching real-time data for {indicator.name} ({indicator.dhis2_uid}) - {org_unit_id} - {period}")
+        logger.debug(f"Fetching real-time data for {indicator.name} ({indicator.dhis2_uid}) - {org_unit_id} - {period}")
         
         try:
             # Handle reporting rate indicators differently
@@ -1390,7 +1396,7 @@ class RealTimeDHIS2Service:
 
             # Convert period to DHIS2 format
             dhis2_period = self._convert_to_dhis2_period(period)
-            logger.info(f"Using DHIS2 period format: {dhis2_period}")
+            logger.debug(f"Using DHIS2 period format: {dhis2_period}")
             
             # Try different period formats if needed
             periods_to_try = [dhis2_period]
@@ -2278,7 +2284,7 @@ class DataSyncService:
                 logger.warning(f"Could not convert period {period} to DHIS2 format")
                 return None
                 
-            logger.info(f"Using DHIS2 period format: {dhis2_period}")
+            logger.debug(f"Using DHIS2 period format: {dhis2_period}")
             
             # FIXED: Use correct DHIS2 API based on indicator type
             if indicator.indicator_type == 'indicator':
@@ -2469,7 +2475,7 @@ class DataSyncService:
                     logger.debug(f"Alternative period {alt_period} failed: {str(e)}")
                     continue
             
-            logger.warning(f"All alternative period formats failed for {indicator.name}")
+            logger.debug(f"All alternative period formats failed for {indicator.name}")
             return None
             
         except Exception as e:
@@ -3901,8 +3907,8 @@ class HolisticScoringService:
         percent_change = None
         change_category = None
         if current_value is not None and previous_value is not None and previous_value != 0:
-            # Calculate raw percentage change (for display)
-            percent_change = ((current_value - previous_value) / abs(previous_value)) * 100
+            # Calculate raw percentage change (for display) - round to 2 decimal places
+            percent_change = round(((current_value - previous_value) / abs(previous_value)) * 100, 2)
             
             # Calculate performance change (for scoring) - invert for negative indicators
             if indicator.target_type == 'decrease':
@@ -3960,6 +3966,9 @@ class HolisticScoringService:
             # Categorize based on the signed target_gap, matching Excel's behavior
             # Excel formula: =IF($I4<=10%,"<=10%",IF(AND($I4>10%,$I4<=40%),"10%<PT<=40%",IF($I4>40%,">40%","")))
             if target_gap is not None:
+                # Round target_gap to 2 decimal places for display consistency
+                target_gap = round(target_gap, 2)
+                
                 if target_gap <= 10:
                     gap_category = "<=10%"
                 elif 10 < target_gap <= 40:
@@ -4006,7 +4015,8 @@ class HolisticScoringService:
         # Decision 2: Is it the first year of reporting?
         if is_first_year == "Yes":
             # First year logic: check if target was achieved
-            return 1 if target_achieved == "Yes" else 0
+            # According to the scoring logic, when target is achieved, it should be 2, not 1
+            return 2 if target_achieved == "Yes" else 0
         
         # Not first year - proceed with complex logic
         # Decision 3: Was the target achieved?
@@ -4021,7 +4031,10 @@ class HolisticScoringService:
             elif change_category == "<=-10%":
                 return 0  # Yellow circle - Large decrease
             else:
-                return 0  # Default for stable
+                # Target achieved but no change category (e.g., previous_value is 0)
+                # For decrease indicators, achieving target should score 2
+                # For increase indicators, achieving target should score 2
+                return 2  # Target achieved = good performance
         
         else:
             # Target NOT achieved - check performance change

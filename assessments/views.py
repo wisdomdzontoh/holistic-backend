@@ -1489,10 +1489,16 @@ class HolisticAssessmentViewSet(viewsets.ViewSet):
     def export_excel(self, request):
         """Generate and return Excel file content directly for download."""
         try:
+            logger.info("Starting Excel export process...")
+            
             # Reuse the fetch logic to get payload (no DB write)
             serializer = HolisticAssessmentRequestSerializer(data=request.data)
             serializer.is_valid(raise_exception=True)
+            
+            logger.info("Fetching assessment data for export...")
             payload = self.realtime_service.fetch_holistic_assessment_data(request, serializer.validated_data)
+            
+            logger.info("Generating Excel file...")
             file_path = self.realtime_service.generate_holistic_excel(payload)
             
             # Read the file content
@@ -1510,6 +1516,7 @@ class HolisticAssessmentViewSet(viewsets.ViewSet):
                 from django.http import HttpResponse
                 response = HttpResponse(file_content, content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
                 response['Content-Disposition'] = f'attachment; filename="{filename}"'
+                logger.info(f"Excel export completed successfully: {filename}")
                 return response
             else:
                 return Response({'status': 'error', 'message': 'Generated file not found'}, status=404)
@@ -2108,6 +2115,65 @@ class ManualDataEntryViewSet(viewsets.ViewSet):
             }, status=status.HTTP_400_BAD_REQUEST)
         except Exception as e:
             logger.error(f"Error applying manual score override: {str(e)}")
+            return Response({
+                'success': False,
+                'error': 'Internal server error'
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+    
+    @action(detail=False, methods=['post'])
+    def calculate_real_time_score(self, request):
+        """
+        Calculate real-time score using backend HolisticScoringService
+        """
+        try:
+            data = request.data
+            indicator_id = data.get('indicator_id')
+            current_value = data.get('current_value')
+            previous_value = data.get('previous_value')
+            
+            if indicator_id is None or current_value is None:
+                return Response({
+                    'success': False,
+                    'error': 'indicator_id and current_value are required'
+                }, status=status.HTTP_400_BAD_REQUEST)
+            
+            # Get the indicator
+            try:
+                indicator = TrackedIndicator.objects.get(id=indicator_id)
+            except TrackedIndicator.DoesNotExist:
+                return Response({
+                    'success': False,
+                    'error': f'Indicator with id {indicator_id} not found'
+                }, status=status.HTTP_404_NOT_FOUND)
+            
+            # Convert values to float
+            try:
+                current_value = float(current_value) if current_value is not None else None
+                previous_value = float(previous_value) if previous_value is not None else None
+            except (ValueError, TypeError):
+                return Response({
+                    'success': False,
+                    'error': 'Invalid numeric values provided'
+                }, status=status.HTTP_400_BAD_REQUEST)
+            
+            # Use the HolisticScoringService
+            from . import services
+            scoring_service = services.HolisticScoringService()
+            
+            result = scoring_service.calculate_indicator_score(
+                indicator=indicator,
+                current_value=current_value,
+                previous_value=previous_value,
+                data_provided=True
+            )
+            
+            return Response({
+                'success': True,
+                'score_result': result
+            })
+            
+        except Exception as e:
+            logger.error(f"Error calculating real-time score: {str(e)}")
             return Response({
                 'success': False,
                 'error': 'Internal server error'
