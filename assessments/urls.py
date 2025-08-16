@@ -44,6 +44,7 @@ urlpatterns = [
         path('bulk-update/', views.ManualDataEntryViewSet.as_view({'post': 'bulk_update_data'}), name='manual-bulk-update'),
         path('override-score/', views.ManualDataEntryViewSet.as_view({'post': 'override_score'}), name='manual-override-score'),
         path('calculate-scores/', views.ManualDataEntryViewSet.as_view({'post': 'calculate_scores'}), name='manual-calculate-scores'),
+        path('calculate_real_time_score/', views.ManualDataEntryViewSet.as_view({'post': 'calculate_real_time_score'}), name='manual-calculate-real-time-score'),
     ])),
     
     path('dashboard/', include([

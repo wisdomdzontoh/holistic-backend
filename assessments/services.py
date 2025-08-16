@@ -45,14 +45,9 @@ class RealTimeDHIS2Service:
         if change_pct is None:
             return None
         
-        # For negative indicators (decrease is better), we need to invert the change
-        # since the change_pct passed here is the raw change, not the performance change
-        if target_type == 'decrease':
-            # Invert the change for negative indicators
-            performance_change = -change_pct
-        else:
-            # For positive indicators, use the raw change
-            performance_change = change_pct
+        # Now that we use the correct formulas, we don't need to invert
+        # The change_pct passed here is already the correct performance change
+        performance_change = change_pct
         
         # Categorize based on performance change
         if performance_change > 5:
@@ -710,11 +705,22 @@ class RealTimeDHIS2Service:
                                         change_pct = None
                                         if prev_val not in (None, 0, 0.0) and curr_val is not None:
                                             try:
-                                                change = ((float(curr_val) - float(prev_val)) / abs(float(prev_val))) * 100.0
+                                                # For range indicators, always use standard formula regardless of target_type
+                                                if target_format == 'RANGE':
+                                                    change = ((float(curr_val) - float(prev_val)) / abs(float(prev_val))) * 100.0
+                                                else:
+                                                    # For non-range indicators, use target_type specific formula
+                                                    if target_type == 'decrease':
+                                                        # For decrease indicators: (previous_value - current_value) / abs(current_value) * 100
+                                                        change = ((float(prev_val) - float(curr_val)) / abs(float(curr_val))) * 100.0
+                                                    else:
+                                                        # For increase indicators: (current_value - previous_value) / abs(previous_value) * 100
+                                                        change = ((float(curr_val) - float(prev_val)) / abs(float(prev_val))) * 100.0
+                                                
                                                 if change == float('inf') or change == float('-inf'):
                                                     change_pct = None
                                                 else:
-                                                    change_pct = round(change, 1)
+                                                    change_pct = round(change, 2)
                                             except Exception:
                                                 change_pct = None
                                         gap_pct = None
@@ -745,7 +751,7 @@ class RealTimeDHIS2Service:
                                                         gap_calc = None
                                                 
                                                 if gap_calc is not None and gap_calc != float('inf') and gap_calc != float('-inf'):
-                                                    gap_pct = round(gap_calc, 1)
+                                                    gap_pct = round(gap_calc, 2)
                                                 else:
                                                     gap_pct = None
                                             except Exception:
@@ -889,11 +895,22 @@ class RealTimeDHIS2Service:
                                 change_pct = None
                                 if prev_val not in (None, 0, 0.0) and curr_val is not None:
                                     try:
-                                        change = ((float(curr_val) - float(prev_val)) / abs(float(prev_val))) * 100.0
+                                        # For range indicators, always use standard formula regardless of target_type
+                                        if target_format == 'RANGE':
+                                            change = ((float(curr_val) - float(prev_val)) / abs(float(prev_val))) * 100.0
+                                        else:
+                                            # For non-range indicators, use target_type specific formula
+                                            if target_type == 'decrease':
+                                                # For decrease indicators: (previous_value - current_value) / abs(current_value) * 100
+                                                change = ((float(prev_val) - float(curr_val)) / abs(float(curr_val))) * 100.0
+                                            else:
+                                                # For increase indicators: (current_value - previous_value) / abs(previous_value) * 100
+                                                change = ((float(curr_val) - float(prev_val)) / abs(float(prev_val))) * 100.0
+                                        
                                         if change == float('inf') or change == float('-inf'):
                                             change_pct = None
                                         else:
-                                            change_pct = round(change, 1)
+                                            change_pct = round(change, 2)
                                     except Exception:
                                         change_pct = None
                                 gap_pct = None
@@ -3614,24 +3631,56 @@ class ManualDataEntryService:
                         }
                 
                 # Calculate percent change if both current and previous values are provided
+                # Use correct formulas based on indicator type
                 if (indicator_score.current_value is not None and 
                     indicator_score.previous_value is not None and 
-                    indicator_score.previous_value > 0):
+                    indicator_score.previous_value != 0):
                     
-                    change = ((indicator_score.current_value - indicator_score.previous_value) / 
-                             indicator_score.previous_value) * 100
-                    indicator_score.percent_change = change
+                    # Get indicator to determine target type and format
+                    indicator = indicator_score.indicator
+                    target_type = getattr(indicator, 'target_type', 'increase').lower()
+                    target_format = getattr(indicator, 'target_format', 'SINGLE')
+                    
+                    if target_format == 'RANGE':
+                        # For range indicators, always use standard formula regardless of target_type
+                        change = ((indicator_score.current_value - indicator_score.previous_value) / 
+                                 abs(indicator_score.previous_value)) * 100
+                    else:
+                        # For non-range indicators, use target_type specific formula
+                        if target_type == 'decrease':
+                            # For decrease indicators: (previous_value - current_value) / abs(current_value) * 100
+                            change = ((indicator_score.previous_value - indicator_score.current_value) / 
+                                     abs(indicator_score.current_value)) * 100
+                        else:
+                            # For increase indicators: (current_value - previous_value) / abs(previous_value) * 100
+                            change = ((indicator_score.current_value - indicator_score.previous_value) / 
+                                     abs(indicator_score.previous_value)) * 100
+                    
+                    # Round to 2 decimal places for consistency
+                    indicator_score.percent_change = round(change, 2)
                 elif 'percent_change' in data_updates:
                     # Manual percent change entry
                     indicator_score.percent_change = self._parse_decimal(data_updates['percent_change'])
                 
                 # Calculate target gap if both current and target values are provided
+                # Use correct formulas based on indicator type
                 if (indicator_score.current_value is not None and 
                     indicator_score.target_value is not None and 
-                    indicator_score.target_value > 0):
+                    indicator_score.target_value != 0):
                     
-                    gap = abs(indicator_score.current_value - indicator_score.target_value) / indicator_score.target_value * 100
-                    indicator_score.target_gap = gap
+                    # Get indicator to determine target type
+                    indicator = indicator_score.indicator
+                    target_type = getattr(indicator, 'target_type', 'increase').lower()
+                    
+                    if target_type == 'decrease':
+                        # For decrease indicators: (target_value - current_value) / current_value * 100
+                        gap = (indicator_score.target_value - indicator_score.current_value) / indicator_score.current_value * 100
+                    else:
+                        # For increase indicators: (current_value - target_value) / target_value * 100
+                        gap = (indicator_score.current_value - indicator_score.target_value) / indicator_score.target_value * 100
+                    
+                    # Round to 2 decimal places for consistency
+                    indicator_score.target_gap = round(gap, 2)
                 elif 'target_gap' in data_updates:
                     # Manual target gap entry
                     indicator_score.target_gap = self._parse_decimal(data_updates['target_gap'])
@@ -3907,16 +3956,23 @@ class HolisticScoringService:
         percent_change = None
         change_category = None
         if current_value is not None and previous_value is not None and previous_value != 0:
-            # Calculate raw percentage change (for display) - round to 2 decimal places
-            percent_change = round(((current_value - previous_value) / abs(previous_value)) * 100, 2)
+            # Calculate raw percentage change based on indicator type
+            target_format = getattr(indicator, 'target_format', 'SINGLE')
             
-            # Calculate performance change (for scoring) - invert for negative indicators
-            if indicator.target_type == 'decrease':
-                # For negative indicators (decrease is better), invert the change for scoring
-                performance_change = -percent_change
+            if target_format == 'RANGE':
+                # For range indicators, always use standard formula regardless of target_type
+                percent_change = round(((current_value - previous_value) / abs(previous_value)) * 100, 2)
             else:
-                # For positive indicators (increase is better), use raw change
-                performance_change = percent_change
+                # For non-range indicators, use target_type specific formula
+                if indicator.target_type == 'decrease':
+                    # For decrease indicators: (previous_value - current_value) / abs(current_value) * 100
+                    percent_change = round(((previous_value - current_value) / abs(current_value)) * 100, 2)
+                else:
+                    # For increase indicators: (current_value - previous_value) / abs(previous_value) * 100
+                    percent_change = round(((current_value - previous_value) / abs(previous_value)) * 100, 2)
+            
+            # Calculate performance change (for scoring) - use raw percent_change for all types
+            performance_change = percent_change
             
             # Categorize based on performance change (not raw change)
             if performance_change <= -10:
@@ -3952,15 +4008,12 @@ class HolisticScoringService:
                 if indicator.target_value is not None:
                     target_float = float(indicator.target_value)
                     if target_float != 0:
-                        # Calculate gap based on target_measurement_type
-                        if indicator.target_measurement_type == 'PERCENTAGE':
-                            # For percentage targets, calculate as percentage difference
-                            target_gap = (current_value - target_float) / target_float * 100
-                        elif indicator.target_measurement_type == 'RATIO':
-                            # For ratio targets, calculate as ratio difference
-                            target_gap = (current_value - target_float) / target_float * 100
-                        else:  # ABSOLUTE
-                            # For absolute targets, calculate as percentage of target
+                        # Calculate gap based on target type
+                        if indicator.target_type == 'decrease':
+                            # For decrease indicators: (target_value - current_value) / current_value * 100
+                            target_gap = (target_float - current_value) / current_value * 100
+                        else:
+                            # For increase indicators: (current_value - target_value) / target_value * 100
                             target_gap = (current_value - target_float) / target_float * 100
             
             # Categorize based on the signed target_gap, matching Excel's behavior
@@ -3981,6 +4034,19 @@ class HolisticScoringService:
             data_provided_flag, is_first_year, target_achieved, 
             change_category, gap_category
         )
+        
+        # Debug logging
+        logger.debug(f"Scoring Debug for Indicator {indicator.id} ({indicator.name}):")
+        logger.debug(f"  target_type: {indicator.target_type}")
+        logger.debug(f"  target_operator: {indicator.target_operator}")
+        logger.debug(f"  target_value: {indicator.target_value}")
+        logger.debug(f"  current_value: {current_value}")
+        logger.debug(f"  previous_value: {previous_value}")
+        logger.debug(f"  percent_change: {percent_change}")
+        logger.debug(f"  target_achieved: {target_achieved}")
+        logger.debug(f"  change_category: {change_category}")
+        logger.debug(f"  gap_category: {gap_category}")
+        logger.debug(f"  final_score: {score}")
         
         return {
             'score': score,
@@ -4004,6 +4070,16 @@ class HolisticScoringService:
         change_category: Optional[str],
         gap_category: Optional[str]
     ) -> int:
+        """
+        Calculate final score based on the flowchart logic shown in the image
+        """
+        
+        logger.debug(f"_calculate_final_score inputs:")
+        logger.debug(f"  data_provided: {data_provided}")
+        logger.debug(f"  is_first_year: {is_first_year}")
+        logger.debug(f"  target_achieved: {target_achieved}")
+        logger.debug(f"  change_category: {change_category}")
+        logger.debug(f"  gap_category: {gap_category}")
         """
         Calculate final score based on the flowchart logic shown in the image
         """
@@ -4040,22 +4116,30 @@ class HolisticScoringService:
             # Target NOT achieved - check performance change
             # Excel formula: IF(AND(M13="No",N13="No",O13=">5%"),1,IF(AND(M13="No",N13="No",O13="5%<=C>-5%",P13="<=10%"),1,IF(AND(M13="No",N13="No",O13="5%<=C>-5%",P13="10%<PT<=40%"),0,IF(AND(M13="No",N13="No",O13="5%<=C>-5%",P13=">40%"),-1,IF(AND(M13="No",N13="No",O13="-10%<C<=-5%"),-1,IF(AND(M13="No",N13="No",O13="<=-10%"),-1))))))
             if change_category == ">5%":
+                logger.debug("  Score calculation: change_category='>5%' -> score=1")
                 return 1  # Excel: IF(AND(M13="No",N13="No",O13=">5%"),1,...)
             elif change_category == "5%<=C>-5%":
                 # Stagnation - check how close to target
                 if gap_category == "<=10%":
+                    logger.debug("  Score calculation: change_category='5%<=C>-5%', gap_category='<=10%' -> score=1")
                     return 1  # Excel: IF(AND(M13="No",N13="No",O13="5%<=C>-5%",P13="<=10%"),1,...)
                 elif gap_category == "10%<PT<=40%":
+                    logger.debug("  Score calculation: change_category='5%<=C>-5%', gap_category='10%<PT<=40%' -> score=0")
                     return 0  # Excel: IF(AND(M13="No",N13="No",O13="5%<=C>-5%",P13="10%<PT<=40%"),0,...)
                 elif gap_category == ">40%":
+                    logger.debug("  Score calculation: change_category='5%<=C>-5%', gap_category='>40%' -> score=-1")
                     return -1  # Excel: IF(AND(M13="No",N13="No",O13="5%<=C>-5%",P13=">40%"),-1,...)
                 else:
+                    logger.debug("  Score calculation: change_category='5%<=C>-5%', gap_category=None -> score=0")
                     return 0  # Default for stable
             elif change_category == "-10%<C<=-5%":
+                logger.debug("  Score calculation: change_category='-10%<C<=-5%' -> score=-1")
                 return -1  # Excel: IF(AND(M13="No",N13="No",O13="-10%<C<=-5%"),-1,...)
             elif change_category == "<=-10%":
-                return -1  # Excel: IF(AND(M13="No",N13="No",O13="<=-10%"),-1,...)
+                logger.debug("  Score calculation: change_category='<=-10%' -> score=-2")
+                return -2  # Large decline should be -2, not -1
             else:
+                logger.debug("  Score calculation: change_category=None -> score=0")
                 return 0  # Default case
         
         # This should never be reached, but just in case
