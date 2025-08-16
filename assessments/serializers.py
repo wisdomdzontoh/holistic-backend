@@ -444,6 +444,11 @@ class HolisticAssessmentRequestSerializer(serializers.Serializer):
         default=True,
         help_text="Whether to include target values"
     )
+    manual_entries = serializers.DictField(
+        required=False,
+        default=dict,
+        help_text="Manual entries data from frontend"
+    )
 
 class HolisticAssessmentSaveSerializer(serializers.Serializer):
     """

@@ -1320,4 +1320,6 @@ class SavedAssessment(models.Model):
     @property
     def assessment_type(self):
         """Get assessment type"""
+        if not self.metadata:
+            return 'holistic'
         return self.metadata.get('assessment_type', 'holistic')

@@ -557,6 +557,8 @@ class RealTimeDHIS2Service:
             org_unit_ids = assessment_config.get('org_unit_ids', [])
             periods_raw = assessment_config.get('periods', [])
             indicator_uids = assessment_config.get('indicator_uids', [])
+            manual_entries = assessment_config.get('manual_entries', {})
+            logger.info(f"Manual entries received: {manual_entries}")
             
             # Handle periods - they can be strings or objects with 'code' field
             periods = []
@@ -695,6 +697,18 @@ class RealTimeDHIS2Service:
                                     'dhis2_value': None,
                                     'manual_override': None
                                 }
+                        
+                        # Apply manual entries if available for this indicator
+                        if manual_entries and str(indicator.id) in manual_entries:
+                            indicator_manual_entries = manual_entries[str(indicator.id)]
+                            logger.info(f"Applying manual entries for indicator {indicator.id}: {indicator_manual_entries}")
+                            
+                            for period_code, manual_value in indicator_manual_entries.items():
+                                if period_code in indicator_data['data_values']:
+                                    # Apply manual override
+                                    indicator_data['data_values'][period_code]['value'] = manual_value
+                                    indicator_data['data_values'][period_code]['manual_override'] = manual_value
+                                    logger.info(f"Applied manual value {manual_value} for indicator {indicator.id} period {period_code}")
                                                         # Compute percent_change and target_gap for latest vs previous period
                                 try:
                                     if isinstance(periods, list) and len(periods) >= 1:
@@ -885,6 +899,18 @@ class RealTimeDHIS2Service:
                                     'dhis2_value': None,
                                     'manual_override': None
                                 }
+                        
+                        # Apply manual entries if available for this indicator
+                        if manual_entries and str(indicator.id) in manual_entries:
+                            indicator_manual_entries = manual_entries[str(indicator.id)]
+                            logger.info(f"Applying manual entries for indicator {indicator.id}: {indicator_manual_entries}")
+                            
+                            for period_code, manual_value in indicator_manual_entries.items():
+                                if period_code in indicator_data['data_values']:
+                                    # Apply manual override
+                                    indicator_data['data_values'][period_code]['value'] = manual_value
+                                    indicator_data['data_values'][period_code]['manual_override'] = manual_value
+                                    logger.info(f"Applied manual value {manual_value} for indicator {indicator.id} period {period_code}")
                         # Compute percent_change and target_gap for latest vs previous period
                         try:
                             if isinstance(periods, list) and len(periods) >= 1:

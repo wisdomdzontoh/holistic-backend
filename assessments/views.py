@@ -1570,9 +1570,11 @@ class HolisticAssessmentViewSet(viewsets.ViewSet):
             
         except Exception as e:
             logger.error(f"Error retrieving saved assessments: {str(e)}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
             return Response({
                 'status': 'error',
-                'message': 'Failed to retrieve assessments'
+                'message': f'Failed to retrieve assessments: {str(e)}'
             }, status=500)
     
     @action(detail=True, methods=['get'])
