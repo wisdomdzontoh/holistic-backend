@@ -449,6 +449,11 @@ class HolisticAssessmentRequestSerializer(serializers.Serializer):
         default=dict,
         help_text="Manual entries data from frontend"
     )
+    pre_calculated_scores = serializers.DictField(
+        required=False,
+        default=dict,
+        help_text="Pre-calculated scores from frontend"
+    )
 
 class HolisticAssessmentSaveSerializer(serializers.Serializer):
     """

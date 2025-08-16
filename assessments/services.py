@@ -12,7 +12,7 @@ from django.conf import settings
 import os
 from datetime import datetime
 from django.core.exceptions import ValidationError
-from django.db.models import Q, Avg, Count, Sum
+from django.db.models import Q, Avg, Count, Sum, Max, Min
 from django.contrib.auth import get_user_model
 from django.core.cache import cache
 import re
@@ -22,8 +22,9 @@ from dhis2_auth.models import DHIS2User
 from dhis2_auth.session import get_dhis2_user_from_request
 from configurations.models import (
     TrackedIndicator, Objective, AssessmentPeriod, 
-    ScoringRule, Milestone
+    ScoringRule, Milestone, IndicatorWeight
 )
+from organisation.models import OrgUnit
 from organisation.services import AccessControlService
 from .models import (
     DataSyncLog, IndicatorData, IndicatorScore, 
@@ -74,8 +75,8 @@ class RealTimeDHIS2Service:
     def _compute_trend_score(self, has_data: bool, current_meets: bool | None, previous_meets: bool | None,
                               change_cat: str | None, gap_cat: str | None, indicator=None) -> int:
         """Use the updated HolisticScoringService algorithm for real-time scoring."""
-        # Use the updated scoring service
-        from assessments.services import HolisticScoringService
+        # Use the updated scoring service - avoid circular import
+        # from assessments.services import HolisticScoringService
         
         # Create a mock indicator for scoring if not provided
         if indicator is None:
@@ -558,7 +559,9 @@ class RealTimeDHIS2Service:
             periods_raw = assessment_config.get('periods', [])
             indicator_uids = assessment_config.get('indicator_uids', [])
             manual_entries = assessment_config.get('manual_entries', {})
+            pre_calculated_scores = assessment_config.get('pre_calculated_scores', {})
             logger.info(f"Manual entries received: {manual_entries}")
+            logger.info(f"Pre-calculated scores received: {pre_calculated_scores}")
             
             # Handle periods - they can be strings or objects with 'code' field
             periods = []
@@ -797,7 +800,25 @@ class RealTimeDHIS2Service:
                                         # Derive a simple indicator score from categories/trend if not provided by DB
                                         derived_score = trend_score
                                         color, label = self._score_color_label(derived_score)
-                                        indicator_data['score'] = {
+                                        
+                                        # Use pre-calculated scores if available, otherwise use computed scores
+                                        if pre_calculated_scores and str(indicator.id) in pre_calculated_scores:
+                                            pre_calc_score = pre_calculated_scores[str(indicator.id)]
+                                            logger.info(f"Using pre-calculated scores for indicator {indicator.id}: {pre_calc_score}")
+                                            indicator_data['score'] = {
+                                                'score': pre_calc_score.get('score'),
+                                                'percent_change': pre_calc_score.get('percent_change'),
+                                                'target_gap': pre_calc_score.get('target_gap'),
+                                                'current_value': pre_calc_score.get('current_value'),
+                                                'previous_value': pre_calc_score.get('previous_value'),
+                                                'change_category': pre_calc_score.get('change_category'),
+                                                'gap_category': pre_calc_score.get('gap_category'),
+                                                'score_color': pre_calc_score.get('score_color'),
+                                                'score_label': pre_calc_score.get('score_label'),
+                                                'is_manual_override': pre_calc_score.get('is_manual_override', False)
+                                            }
+                                        else:
+                                            indicator_data['score'] = {
                                             'percent_change': change_pct,
                                             'target_gap': gap_pct,
                                             'change_category': change_cat,
@@ -1065,7 +1086,25 @@ class RealTimeDHIS2Service:
                                 # Derive a simple indicator score from categories/trend if not provided by DB
                                 derived_score = trend_score
                                 color, label = self._score_color_label(derived_score)
-                                indicator_data['score'] = {
+                                
+                                # Use pre-calculated scores if available, otherwise use computed scores
+                                if pre_calculated_scores and str(indicator.id) in pre_calculated_scores:
+                                    pre_calc_score = pre_calculated_scores[str(indicator.id)]
+                                    logger.info(f"Using pre-calculated scores for indicator {indicator.id}: {pre_calc_score}")
+                                    indicator_data['score'] = {
+                                        'score': pre_calc_score.get('score'),
+                                        'percent_change': pre_calc_score.get('percent_change'),
+                                        'target_gap': pre_calc_score.get('target_gap'),
+                                        'current_value': pre_calc_score.get('current_value'),
+                                        'previous_value': pre_calc_score.get('previous_value'),
+                                        'change_category': pre_calc_score.get('change_category'),
+                                        'gap_category': pre_calc_score.get('gap_category'),
+                                        'score_color': pre_calc_score.get('score_color'),
+                                        'score_label': pre_calc_score.get('score_label'),
+                                        'is_manual_override': pre_calc_score.get('is_manual_override', False)
+                                    }
+                                else:
+                                    indicator_data['score'] = {
                                     'percent_change': change_pct,
                                     'target_gap': gap_pct,
                                     'change_category': change_cat,
@@ -2142,7 +2181,6 @@ class DataSyncService:
         else:
             # Sync all active indicators
             return TrackedIndicator.objects.filter(is_active=True)
-            current = start
     
     def _get_org_units_to_sync(self, sync_request):
         """Get org units to sync based on request"""

@@ -399,6 +399,66 @@ class OrgUnitDescendantsView(APIView):
             )
 
 
+class OrgUnitDetailView(APIView):
+    """
+    View to get a single organisation unit by ID.
+    """
+    
+    def get(self, request, org_unit_id):
+        """
+        Get a single organisation unit by ID.
+        """
+        session_key = request.session.session_key
+        
+        if not session_key or not is_dhis2_authenticated(session_key):
+            return Response(
+                {
+                    'success': False,
+                    'message': 'Authentication required'
+                },
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+        
+        try:
+            session_data = get_dhis2_session_data(session_key)
+            
+            # Create DHIS2 client
+            client = DHIS2Client(
+                instance_url=session_data['instance_url'],
+                session_key=session_key
+            )
+            
+            # Get single org unit
+            org_unit = client.get_org_unit_by_id(org_unit_id)
+            
+            if not org_unit:
+                return Response(
+                    {
+                        'success': False,
+                        'message': 'Organisation unit not found'
+                    },
+                    status=status.HTTP_404_NOT_FOUND
+                )
+            
+            return Response(
+                {
+                    'success': True,
+                    'org_unit': org_unit
+                },
+                status=status.HTTP_200_OK
+            )
+            
+        except Exception as e:
+            logger.error(f"Error fetching org unit {org_unit_id}: {str(e)}")
+            return Response(
+                {
+                    'success': False,
+                    'message': 'Error fetching organisation unit'
+                },
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+
 class OrgUnitChildrenView(APIView):
     """
     View to get immediate children of an organisation unit.

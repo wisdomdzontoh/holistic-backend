@@ -432,6 +432,29 @@ class DHIS2Client:
             logger.error(f"Error getting organization units: {str(e)}")
             raise
 
+    def get_org_unit_by_id(self, org_unit_id: str) -> Dict[str, Any]:
+        """
+        Get a single organisation unit by ID
+        
+        Args:
+            org_unit_id: The organisation unit ID
+            
+        Returns:
+            Organisation unit dictionary or None if not found
+        """
+        try:
+            endpoint = f"api/organisationUnits/{org_unit_id}"
+            params = {
+                "fields": "id,name,displayName,level,path,code,parent[id,name,displayName]"
+            }
+            
+            data = self._make_request("GET", endpoint, params=params)
+            return data
+            
+        except Exception as e:
+            logger.error(f"Error getting organization unit {org_unit_id}: {str(e)}")
+            return None
+
     def get_org_unit_hierarchy(self, root_id: str = None, max_depth: int = 3) -> List[Dict[str, Any]]:
         """
         Get organisation unit hierarchy with nested children for tree structure
