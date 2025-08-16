@@ -12,6 +12,31 @@ from import_export.admin import ImportExportModelAdmin
 from import_export.widgets import ForeignKeyWidget, ManyToManyWidget, Widget
 from import_export.formats import base_formats
 from .models import TrackedIndicator, IndicatorCategory, IndicatorCategoryMapping, IndicatorThreshold
+from configurations.models import IndicatorWeight
+
+
+class WeightAssignmentFilter(admin.SimpleListFilter):
+    """
+    Custom filter to show indicators by weight assignment status
+    """
+    title = 'Weight Assignment'
+    parameter_name = 'weight_assignment'
+
+    def lookups(self, request, model_admin):
+        return (
+            ('assigned', 'Has Weights Assigned'),
+            ('unassigned', 'No Weights Assigned'),
+        )
+
+    def queryset(self, request, queryset):
+        if self.value() == 'assigned':
+            # Get indicators that have weights assigned
+            indicators_with_weights = IndicatorWeight.objects.values_list('indicator_id', flat=True).distinct()
+            return queryset.filter(id__in=indicators_with_weights)
+        elif self.value() == 'unassigned':
+            # Get indicators that don't have weights assigned
+            indicators_with_weights = IndicatorWeight.objects.values_list('indicator_id', flat=True).distinct()
+            return queryset.exclude(id__in=indicators_with_weights)
 
 
 class TrackedIndicatorAdminForm(forms.ModelForm):
@@ -180,9 +205,10 @@ class TrackedIndicatorAdmin(ImportExportModelAdmin):
     
     list_display = [
         'name', 'indicator_number', 'dhis2_uid', 'indicator_type', 'is_active', 
-        'target_value', 'target_lower_limit', 'target_upper_limit', 'target_format', 'target_operator', 'target_display', 'display_order'
+        'weight_assignment_status', 'target_value', 'target_lower_limit', 'target_upper_limit', 'target_format', 'target_operator', 'target_display', 'display_order'
     ]
     list_filter = [
+        WeightAssignmentFilter,
         'indicator_type', 'is_active', 'target_type', 'target_operator', 
         'target_measurement_type', 'created_at', 'updated_at'
     ]
@@ -260,6 +286,15 @@ class TrackedIndicatorAdmin(ImportExportModelAdmin):
         response['Content-Disposition'] = 'attachment; filename="tracked_indicators_export.xlsx"'
         return response
     
+    def weight_assignment_status(self, obj):
+        """Display weight assignment status"""
+        has_weights = IndicatorWeight.objects.filter(indicator=obj).exists()
+        if has_weights:
+            return format_html('<span style="color: green;">✓ Assigned</span>')
+        else:
+            return format_html('<span style="color: red;">✗ Unassigned</span>')
+    weight_assignment_status.short_description = 'Weights'
+
     def sync_status(self, obj):
         """Display sync status"""
         if not obj.last_sync:

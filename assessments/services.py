@@ -50,11 +50,11 @@ class RealTimeDHIS2Service:
         # The change_pct passed here is already the correct performance change
         performance_change = change_pct
         
-        # Categorize based on performance change
+        # Categorize based on performance change - EXACTLY matches flowchart
         if performance_change > 5:
             return '>5%'
         if -5 < performance_change <= 5:
-            return '5%<=C>-5%'
+            return '-5%<C<=5%'  # Stagnation category
         if -10 < performance_change <= -5:
             return '-10%<C<=-5%'
         return '<=-10%'
@@ -124,10 +124,17 @@ class RealTimeDHIS2Service:
                 # Target WAS achieved - check performance change
                 if change_cat == ">5%":
                     return 2
-                elif change_cat == "5%<=C>-5%":
-                    return 2
+                elif change_cat == "-5%<C<=5%":
+                    # For stagnation, check if it's positive or negative change
+                    # If it's a negative change on an increase indicator, it should score lower
+                    if indicator and hasattr(indicator, 'target_type') and indicator.target_type == 'increase':
+                        # For increase indicators, negative change should score lower even if target is achieved
+                        return 1  # Moderately performing instead of highly performing
+                    else:
+                        return 2
                 elif change_cat == "-10%<C<=-5%":
-                    return 2
+                    # For negative change, score lower even if target is achieved
+                    return 1
                 elif change_cat == "<=-10%":
                     return 0
                 else:
@@ -575,6 +582,10 @@ class RealTimeDHIS2Service:
                     period_code = getattr(period, 'code', str(period))
                     periods.append(period_code)
             
+            # Sort periods chronologically to ensure correct change calculation
+            # This ensures that periods[-1] is the most recent and periods[-2] is the previous
+            periods.sort()
+            
             if not org_unit_ids or not periods:
                 raise ValidationError("Organization units and periods are required")
             
@@ -712,127 +723,116 @@ class RealTimeDHIS2Service:
                                     indicator_data['data_values'][period_code]['value'] = manual_value
                                     indicator_data['data_values'][period_code]['manual_override'] = manual_value
                                     logger.info(f"Applied manual value {manual_value} for indicator {indicator.id} period {period_code}")
-                                                        # Compute percent_change and target_gap for latest vs previous period
-                                try:
-                                    if isinstance(periods, list) and len(periods) >= 1:
-                                        last_key = periods[-1]  # This is now a period code
-                                        prev_key = periods[-2] if len(periods) > 1 else None
-                                        curr_val = indicator_data['data_values'].get(last_key, {}).get('value')
-                                        prev_val = indicator_data['data_values'].get(prev_key, {}).get('value') if prev_key else None
-                                        change_pct = None
-                                        if prev_val not in (None, 0, 0.0) and curr_val is not None:
-                                            try:
-                                                # For range indicators, always use standard formula regardless of target_type
-                                                if target_format == 'RANGE':
-                                                    change = ((float(curr_val) - float(prev_val)) / abs(float(prev_val))) * 100.0
-                                                else:
-                                                    # For non-range indicators, use target_type specific formula
-                                                    if target_type == 'decrease':
-                                                        # For decrease indicators: (previous_value - current_value) / abs(current_value) * 100
-                                                        change = ((float(prev_val) - float(curr_val)) / abs(float(curr_val))) * 100.0
-                                                    else:
-                                                        # For increase indicators: (current_value - previous_value) / abs(previous_value) * 100
-                                                        change = ((float(curr_val) - float(prev_val)) / abs(float(prev_val))) * 100.0
-                                                
-                                                if change == float('inf') or change == float('-inf'):
-                                                    change_pct = None
-                                                else:
-                                                    change_pct = round(change, 2)
-                                            except Exception:
-                                                change_pct = None
-                                        gap_pct = None
-                                        # Calculate the correct target value for gap analysis
-                                        # For range indicators, use Excel's formula: (Upper Limit - Current Value) / Current Value
-                                        # For other indicators, use the target_value
-                                        tgt = indicator_data.get('target_value')
-                                        target_format = indicator_data.get('target_format', 'SINGLE')
-                                        target_upper = indicator_data.get('target_upper_limit')
-                                        
-                                        # Define target_type outside the conditional block
-                                        target_type = (indicator_data.get('target_type') or 'increase').lower()
-                                        if curr_val is not None and curr_val != 0:
-                                            try:
-                                                if target_format == 'RANGE' and target_upper is not None:
-                                                    # For range indicators: (Target upper limit - Current Value) / Current Value * 100
-                                                    gap_calc = ((float(target_upper) - float(curr_val)) / float(curr_val)) * 100.0
-                                                else:
-                                                    # For non-range indicators
-                                                    if tgt not in (None, 0, 0.0):
-                                                        if target_type == 'increase':
-                                                            # For increase indicators: (Current Value - Target Value) / Target Value * 100
-                                                            gap_calc = ((float(curr_val) - float(tgt)) / float(tgt)) * 100.0
-                                                        else:
-                                                            # For decrease indicators: (Target Value - Current Value) / Current Value * 100
-                                                            gap_calc = ((float(tgt) - float(curr_val)) / float(curr_val)) * 100.0
-                                                    else:
-                                                        gap_calc = None
-                                                
-                                                if gap_calc is not None and gap_calc != float('inf') and gap_calc != float('-inf'):
-                                                    gap_pct = round(gap_calc, 2)
-                                                else:
-                                                    gap_pct = None
-                                            except Exception:
-                                                gap_pct = None
-                                        # Derive categories and simple threshold flags for M/N
-                                        change_cat = self._classify_change_category(change_pct, target_type)
-                                        gap_cat = self._classify_gap_category(gap_pct)
-                                        # For M/N we use meet-threshold as curr >= target for increase, curr <= target for decrease
-                                        current_meets = None
-                                        previous_meets = None
-                                        try:
-                                            if curr_val is not None and tgt not in (None,):
-                                                if (indicator_data.get('target_type') or 'increase').lower() == 'increase':
-                                                    current_meets = float(curr_val) >= float(tgt)
-                                                else:
-                                                    current_meets = float(curr_val) <= float(tgt)
-                                        except Exception:
-                                            current_meets = None
-                                        try:
-                                            if prev_val is not None and tgt not in (None,):
-                                                if (indicator_data.get('target_type') or 'increase').lower() == 'increase':
-                                                    previous_meets = float(prev_val) >= float(tgt)
-                                                else:
-                                                    previous_meets = float(prev_val) <= float(tgt)
-                                        except Exception:
-                                            previous_meets = None
-                                        has_data = curr_val is not None
-                                        trend_score = self._compute_trend_score(has_data, current_meets, previous_meets, change_cat, gap_cat)
-                                        # Derive a simple indicator score from categories/trend if not provided by DB
-                                        derived_score = trend_score
-                                        color, label = self._score_color_label(derived_score)
-                                        
-                                        # Use pre-calculated scores if available, otherwise use computed scores
-                                        if pre_calculated_scores and str(indicator.id) in pre_calculated_scores:
-                                            pre_calc_score = pre_calculated_scores[str(indicator.id)]
-                                            logger.info(f"Using pre-calculated scores for indicator {indicator.id}: {pre_calc_score}")
-                                            indicator_data['score'] = {
-                                                'score': pre_calc_score.get('score'),
-                                                'percent_change': pre_calc_score.get('percent_change'),
-                                                'target_gap': pre_calc_score.get('target_gap'),
-                                                'current_value': pre_calc_score.get('current_value'),
-                                                'previous_value': pre_calc_score.get('previous_value'),
-                                                'change_category': pre_calc_score.get('change_category'),
-                                                'gap_category': pre_calc_score.get('gap_category'),
-                                                'score_color': pre_calc_score.get('score_color'),
-                                                'score_label': pre_calc_score.get('score_label'),
-                                                'is_manual_override': pre_calc_score.get('is_manual_override', False)
-                                            }
+                        
+                        # Compute percent_change and target_gap for latest vs previous period
+                        try:
+                            if isinstance(periods, list) and len(periods) >= 1:
+                                last_key = periods[-1]  # This is now a period code
+                                prev_key = periods[-2] if len(periods) > 1 else None
+                                curr_val = indicator_data['data_values'].get(last_key, {}).get('value')
+                                prev_val = indicator_data['data_values'].get(prev_key, {}).get('value') if prev_key else None
+                                change_pct = None
+                                
+                                # Get target information
+                                tgt = indicator_data.get('target_value')
+                                target_format = indicator_data.get('target_format', 'SINGLE')
+                                target_upper = indicator_data.get('target_upper_limit')
+                                target_type = indicator.target_type
+                                
+                                if prev_val not in (None, 0, 0.0) and curr_val is not None:
+                                    try:
+                                        # For range indicators, always use standard formula regardless of target_type
+                                        if target_format == 'RANGE':
+                                            change = ((float(curr_val) - float(prev_val)) / abs(float(prev_val))) * 100.0
                                         else:
-                                            indicator_data['score'] = {
-                                            'percent_change': change_pct,
-                                            'target_gap': gap_pct,
-                                            'change_category': change_cat,
-                                            'gap_category': gap_cat,
-                                            'trend_score': trend_score,
-                                            'score': derived_score,
-                                            'score_color': color,
-                                            'score_label': label,
-                                            'current_value': curr_val,
-                                            'previous_value': prev_val,
-                                            'is_manual_override': False
-                                        }
-                                except Exception as e:
-                                    logger.warning(f"Failed computing change/gap for indicator {indicator.id}: {e}")
+                                            # For non-range indicators, use target_type specific formula
+                                            if target_type == 'decrease':
+                                                # For decrease indicators: (previous_value - current_value) / abs(current_value) * 100
+                                                change = ((float(prev_val) - float(curr_val)) / abs(float(curr_val))) * 100.0
+                                            else:
+                                                # For increase indicators: (current_value - previous_value) / abs(previous_value) * 100
+                                                change = ((float(curr_val) - float(prev_val)) / abs(float(prev_val))) * 100.0
+                                        
+                                        if change == float('inf') or change == float('-inf'):
+                                            change_pct = None
+                                        else:
+                                            change_pct = round(change, 2)
+                                    except Exception:
+                                        change_pct = None
+                                
+                                gap_pct = None
+                                # Calculate the correct target value for gap analysis
+                                if curr_val is not None and curr_val != 0:
+                                    try:
+                                        if target_format == 'RANGE' and target_upper is not None:
+                                            # For range indicators: (Target upper limit - Current Value) / Current Value * 100
+                                            gap_calc = ((float(target_upper) - float(curr_val)) / float(curr_val)) * 100.0
+                                        else:
+                                            # For non-range indicators
+                                            if tgt not in (None, 0, 0.0):
+                                                if target_type == 'increase':
+                                                    # For increase indicators: (Current Value - Target Value) / Target Value * 100
+                                                    gap_calc = ((float(curr_val) - float(tgt)) / float(tgt)) * 100.0
+                                                else:
+                                                    # For decrease indicators: (Target Value - Current Value) / Current Value * 100
+                                                    gap_calc = ((float(tgt) - float(curr_val)) / float(curr_val)) * 100.0
+                                            else:
+                                                gap_calc = None
+                                        
+                                        if gap_calc is not None and gap_calc != float('inf') and gap_calc != float('-inf'):
+                                            gap_pct = round(gap_calc, 2)
+                                        else:
+                                            gap_pct = None
+                                    except Exception:
+                                        gap_pct = None
+                                
+                                # Derive categories and simple threshold flags for M/N
+                                change_cat = self._classify_change_category(change_pct, target_type)
+                                gap_cat = self._classify_gap_category(gap_pct)
+                                
+                                # For M/N we use meet-threshold as curr >= target for increase, curr <= target for decrease
+                                current_meets = None
+                                previous_meets = None
+                                try:
+                                    if curr_val is not None and tgt not in (None,):
+                                        if indicator.target_type == 'increase':
+                                            current_meets = float(curr_val) >= float(tgt)
+                                        else:
+                                            current_meets = float(curr_val) <= float(tgt)
+                                except Exception:
+                                    current_meets = None
+                                try:
+                                    if prev_val is not None and tgt not in (None,):
+                                        if indicator.target_type == 'increase':
+                                            previous_meets = float(prev_val) >= float(tgt)
+                                        else:
+                                            previous_meets = float(prev_val) <= float(tgt)
+                                except Exception:
+                                    previous_meets = None
+                                
+                                has_data = curr_val is not None
+                                trend_score = self._compute_trend_score(has_data, current_meets, previous_meets, change_cat, gap_cat, indicator)
+                                # Derive a simple indicator score from categories/trend if not provided by DB
+                                derived_score = trend_score
+                                color, label = self._score_color_label(derived_score)
+                                
+                                # Always use fresh calculations to ensure consistency with the latest fixes
+                                # Pre-calculated scores may contain old, incorrect calculations
+                                indicator_data['score'] = {
+                                    'percent_change': change_pct,
+                                    'target_gap': gap_pct,
+                                    'change_category': change_cat,
+                                    'gap_category': gap_cat,
+                                    'trend_score': trend_score,
+                                    'score': derived_score,
+                                    'score_color': color,
+                                    'score_label': label,
+                                    'current_value': curr_val,
+                                    'previous_value': prev_val,
+                                    'is_manual_override': False
+                                }
+                        except Exception as e:
+                            logger.warning(f"Failed computing change/gap for indicator {indicator.id}: {e}")
                         
                         objective_data['indicators'].append(indicator_data)
                     
@@ -940,6 +940,13 @@ class RealTimeDHIS2Service:
                                 curr_val = indicator_data['data_values'].get(last_key, {}).get('value')
                                 prev_val = indicator_data['data_values'].get(prev_key, {}).get('value') if prev_key else None
                                 change_pct = None
+                                
+                                # Get target information first
+                                tgt = indicator_data.get('target_value')
+                                target_format = indicator_data.get('target_format', 'SINGLE')
+                                target_upper = indicator_data.get('target_upper_limit')
+                                target_type = indicator.target_type
+                                
                                 if prev_val not in (None, 0, 0.0) and curr_val is not None:
                                     try:
                                         # For range indicators, always use standard formula regardless of target_type
@@ -962,14 +969,6 @@ class RealTimeDHIS2Service:
                                         change_pct = None
                                 gap_pct = None
                                 # Calculate the correct target value for gap analysis
-                                # For range indicators, use Excel's formula: (Upper Limit - Current Value) / Current Value
-                                # For other indicators, use the target_value
-                                tgt = indicator_data.get('target_value')
-                                target_format = indicator_data.get('target_format', 'SINGLE')
-                                target_upper = indicator_data.get('target_upper_limit')
-                                
-                                # Define target_type outside the conditional block
-                                target_type = (indicator_data.get('target_type') or 'increase').lower()
                                 if curr_val is not None and curr_val != 0:
                                     try:
                                         if target_format == 'RANGE' and target_upper is not None:
@@ -1014,7 +1013,11 @@ class RealTimeDHIS2Service:
                                                 # Fallback to single target value
                                                 if tgt not in (None,):
                                                     target_val = float(tgt)
-                                                    current_meets = current_val >= target_val
+                                                    # Use target_type to determine achievement for fallback
+                                                    if indicator.target_type == 'decrease':
+                                                        current_meets = current_val <= target_val
+                                                    else:
+                                                        current_meets = current_val >= target_val
                                         else:
                                             # Single value target: use the target_operator
                                             if tgt not in (None,):
@@ -1055,7 +1058,11 @@ class RealTimeDHIS2Service:
                                                 # Fallback to single target value
                                                 if tgt not in (None,):
                                                     target_val = float(tgt)
-                                                    previous_meets = previous_val >= target_val
+                                                    # Use target_type to determine achievement for fallback
+                                                    if indicator.target_type == 'decrease':
+                                                        previous_meets = previous_val <= target_val
+                                                    else:
+                                                        previous_meets = previous_val >= target_val
                                         else:
                                             # Single value target: use the target_operator
                                             if tgt not in (None,):
@@ -1087,24 +1094,9 @@ class RealTimeDHIS2Service:
                                 derived_score = trend_score
                                 color, label = self._score_color_label(derived_score)
                                 
-                                # Use pre-calculated scores if available, otherwise use computed scores
-                                if pre_calculated_scores and str(indicator.id) in pre_calculated_scores:
-                                    pre_calc_score = pre_calculated_scores[str(indicator.id)]
-                                    logger.info(f"Using pre-calculated scores for indicator {indicator.id}: {pre_calc_score}")
-                                    indicator_data['score'] = {
-                                        'score': pre_calc_score.get('score'),
-                                        'percent_change': pre_calc_score.get('percent_change'),
-                                        'target_gap': pre_calc_score.get('target_gap'),
-                                        'current_value': pre_calc_score.get('current_value'),
-                                        'previous_value': pre_calc_score.get('previous_value'),
-                                        'change_category': pre_calc_score.get('change_category'),
-                                        'gap_category': pre_calc_score.get('gap_category'),
-                                        'score_color': pre_calc_score.get('score_color'),
-                                        'score_label': pre_calc_score.get('score_label'),
-                                        'is_manual_override': pre_calc_score.get('is_manual_override', False)
-                                    }
-                                else:
-                                    indicator_data['score'] = {
+                                # Always use fresh calculations to ensure consistency with the latest fixes
+                                # Pre-calculated scores may contain old, incorrect calculations
+                                indicator_data['score'] = {
                                     'percent_change': change_pct,
                                     'target_gap': gap_pct,
                                     'change_category': change_cat,
@@ -3985,7 +3977,11 @@ class HolisticScoringService:
                     # Fallback to single target value
                     if indicator.target_value is not None:
                         target_float = float(indicator.target_value)
-                        target_achieved = "Yes" if current_value >= target_float else "No"
+                        # Use target_type to determine achievement for fallback
+                        if indicator.target_type == 'decrease':
+                            target_achieved = "Yes" if current_value <= target_float else "No"
+                        else:
+                            target_achieved = "Yes" if current_value >= target_float else "No"
             elif hasattr(indicator, 'target_format') and indicator.target_format == 'MINIMUM':
                 # Minimum target: current value should be >= target_value
                 if indicator.target_value is not None:
@@ -4038,13 +4034,13 @@ class HolisticScoringService:
             # Calculate performance change (for scoring) - use raw percent_change for all types
             performance_change = percent_change
             
-            # Categorize based on performance change (not raw change)
+            # Categorize based on performance change (not raw change) - EXACTLY matches flowchart
             if performance_change <= -10:
                 change_category = "<=-10%"
             elif performance_change <= -5:
                 change_category = "-10%<C<=-5%"
             elif performance_change <= 5:
-                change_category = "5%<=C>-5%"
+                change_category = "-5%<C<=5%"  # Stagnation category
             elif performance_change > 5:
                 change_category = ">5%"
         
@@ -4066,7 +4062,13 @@ class HolisticScoringService:
                     if indicator.target_value is not None:
                         target_float = float(indicator.target_value)
                         if target_float != 0:
-                            target_gap = (current_value - target_float) / target_float * 100
+                            # Calculate gap based on target type for fallback
+                            if indicator.target_type == 'decrease':
+                                # For decrease indicators: (target_value - current_value) / current_value * 100
+                                target_gap = (target_float - current_value) / current_value * 100
+                            else:
+                                # For increase indicators: (current_value - target_value) / target_value * 100
+                                target_gap = (current_value - target_float) / target_float * 100
             else:
                 # Single value target
                 if indicator.target_value is not None:
@@ -4155,8 +4157,8 @@ class HolisticScoringService:
         # Decision 2: Is it the first year of reporting?
         if is_first_year == "Yes":
             # First year logic: check if target was achieved
-            # According to the scoring logic, when target is achieved, it should be 2, not 1
-            return 2 if target_achieved == "Yes" else 0
+            # According to the flowchart, when target is achieved, it should be 1, not 2
+            return 1 if target_achieved == "Yes" else 0
         
         # Not first year - proceed with complex logic
         # Decision 3: Was the target achieved?
@@ -4164,12 +4166,12 @@ class HolisticScoringService:
             # Target WAS achieved - check performance change
             if change_category == ">5%":
                 return 2  # Green circle - Increase
-            elif change_category == "5%<=C>-5%":
+            elif change_category == "-5%<C<=5%":
                 return 2  # Green circle - Stagnation
             elif change_category == "-10%<C<=-5%":
-                return 2  # Green circle - Small decrease (FIXED: should be 2, not 1)
+                return 1  # Green circle - Small decrease (should be 1, not 2)
             elif change_category == "<=-10%":
-                return 0  # Yellow circle - Large decrease
+                return 0  # Yellow circle - Large decrease (should be 0, not -2)
             else:
                 # Target achieved but no change category (e.g., previous_value is 0)
                 # For decrease indicators, achieving target should score 2
@@ -4182,26 +4184,26 @@ class HolisticScoringService:
             if change_category == ">5%":
                 logger.debug("  Score calculation: change_category='>5%' -> score=1")
                 return 1  # Excel: IF(AND(M13="No",N13="No",O13=">5%"),1,...)
-            elif change_category == "5%<=C>-5%":
+            elif change_category == "-5%<C<=5%":
                 # Stagnation - check how close to target
                 if gap_category == "<=10%":
-                    logger.debug("  Score calculation: change_category='5%<=C>-5%', gap_category='<=10%' -> score=1")
-                    return 1  # Excel: IF(AND(M13="No",N13="No",O13="5%<=C>-5%",P13="<=10%"),1,...)
+                    logger.debug("  Score calculation: change_category='-5%<C<=5%', gap_category='<=10%' -> score=1")
+                    return 1  # Excel: IF(AND(M13="No",N13="No",O13="-5%<C<=5%",P13="<=10%"),1,...)
                 elif gap_category == "10%<PT<=40%":
-                    logger.debug("  Score calculation: change_category='5%<=C>-5%', gap_category='10%<PT<=40%' -> score=0")
-                    return 0  # Excel: IF(AND(M13="No",N13="No",O13="5%<=C>-5%",P13="10%<PT<=40%"),0,...)
+                    logger.debug("  Score calculation: change_category='-5%<C<=5%', gap_category='10%<PT<=40%' -> score=0")
+                    return 0  # Excel: IF(AND(M13="No",N13="No",O13="-5%<C<=5%",P13="10%<PT<=40%"),0,...)
                 elif gap_category == ">40%":
-                    logger.debug("  Score calculation: change_category='5%<=C>-5%', gap_category='>40%' -> score=-1")
-                    return -1  # Excel: IF(AND(M13="No",N13="No",O13="5%<=C>-5%",P13=">40%"),-1,...)
+                    logger.debug("  Score calculation: change_category='-5%<C<=5%', gap_category='>40%' -> score=-1")
+                    return -1  # Excel: IF(AND(M13="No",N13="No",O13="-5%<C<=5%",P13=">40%"),-1,...)
                 else:
-                    logger.debug("  Score calculation: change_category='5%<=C>-5%', gap_category=None -> score=0")
+                    logger.debug("  Score calculation: change_category='-5%<C<=5%', gap_category=None -> score=0")
                     return 0  # Default for stable
             elif change_category == "-10%<C<=-5%":
                 logger.debug("  Score calculation: change_category='-10%<C<=-5%' -> score=-1")
                 return -1  # Excel: IF(AND(M13="No",N13="No",O13="-10%<C<=-5%"),-1,...)
             elif change_category == "<=-10%":
-                logger.debug("  Score calculation: change_category='<=-10%' -> score=-2")
-                return -2  # Large decline should be -2, not -1
+                logger.debug("  Score calculation: change_category='<=-10%' -> score=-1")
+                return -1  # Large decline should be -1 when target NOT achieved
             else:
                 logger.debug("  Score calculation: change_category=None -> score=0")
                 return 0  # Default case

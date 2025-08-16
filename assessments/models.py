@@ -577,17 +577,31 @@ class IndicatorScore(models.Model):
         if self.indicator.target_value is not None:
             # Use target gap
             if self.current_value is not None and self.target_value > 0:
-                gap = abs(self.current_value - self.target_value) / self.target_value * 100
+                # Calculate gap based on target type
+                if self.indicator.target_type == 'decrease':
+                    # For decrease indicators: (target_value - current_value) / current_value * 100
+                    gap = (self.target_value - self.current_value) / self.current_value * 100
+                else:
+                    # For increase indicators: (current_value - target_value) / target_value * 100
+                    gap = (self.current_value - self.target_value) / self.target_value * 100
+                
                 self.target_gap = gap
                 self.percent_change = None
-                metric_value = gap
+                metric_value = abs(gap)  # Use absolute value for scoring rules
                 performance_type = 'gap'
             else:
                 return
         elif self.previous_value is not None and self.previous_value > 0:
             # Use percent change
             if self.current_value is not None:
-                change = ((self.current_value - self.previous_value) / self.previous_value) * 100
+                # Calculate change based on target type
+                if self.indicator.target_type == 'decrease':
+                    # For decrease indicators: (previous_value - current_value) / abs(current_value) * 100
+                    change = ((self.previous_value - self.current_value) / abs(self.current_value)) * 100
+                else:
+                    # For increase indicators: (current_value - previous_value) / abs(previous_value) * 100
+                    change = ((self.current_value - self.previous_value) / abs(self.previous_value)) * 100
+                
                 self.percent_change = change
                 self.target_gap = None
                 metric_value = change
