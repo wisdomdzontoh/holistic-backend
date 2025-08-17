@@ -125,13 +125,8 @@ class RealTimeDHIS2Service:
                 if change_cat == ">5%":
                     return 2
                 elif change_cat == "-5%<C<=5%":
-                    # For stagnation, check if it's positive or negative change
-                    # If it's a negative change on an increase indicator, it should score lower
-                    if indicator and hasattr(indicator, 'target_type') and indicator.target_type == 'increase':
-                        # For increase indicators, negative change should score lower even if target is achieved
-                        return 1  # Moderately performing instead of highly performing
-                    else:
-                        return 2
+                    # For stagnation, when target is achieved, score should be 2
+                    return 2
                 elif change_cat == "-10%<C<=-5%":
                     # For negative change, score lower even if target is achieved
                     return 1
@@ -143,7 +138,7 @@ class RealTimeDHIS2Service:
                 # Target NOT achieved - check performance change
                 if change_cat == ">5%":
                     return 1
-                elif change_cat == "5%<=C>-5%":
+                elif change_cat == "-5%<C<=5%":
                     # Stagnation - check how close to target
                     if gap_cat == "<=10%":
                         return 1
@@ -538,7 +533,15 @@ class RealTimeDHIS2Service:
         # Save file
         export_dir = os.path.join(getattr(settings, 'MEDIA_ROOT', os.path.join(os.getcwd(), 'media')), 'exports')
         os.makedirs(export_dir, exist_ok=True)
-        filename = f"holistic-assessment-{datetime.now().strftime('%Y%m%d-%H%M%S')}.xlsx"
+        
+        # Get organization unit name for filename
+        org_unit_name = "Unknown"
+        if data.get('org_unit_name'):
+            org_unit_name = data['org_unit_name'].replace(' ', '_').replace('/', '_').replace('\\', '_')
+        elif data.get('org_unit_id'):
+            org_unit_name = f"OrgUnit_{data['org_unit_id']}"
+        
+        filename = f"holistic-assessment-{org_unit_name}-{datetime.now().strftime('%Y%m%d-%H%M%S')}.xlsx"
         file_path = os.path.join(export_dir, filename)
         wb.save(file_path)
         return file_path
@@ -4012,7 +4015,7 @@ class HolisticScoringService:
                         # Default to >= for backward compatibility
                         target_achieved = "Yes" if current_value >= target_float else "No"
         
-        # Step 4: Performance Change (Column H) - =IF($H4<=-10%,"<=-10%",IF($H4<=-5%,"-10%<C<=-5%",IF($H4<=5%,"5%<=C>-5%",IF($H4>5%,">5%",""))))
+        # Step 4: Performance Change (Column H) - =IF($H4<=-10%,"<=-10%",IF($H4<=-5%,"-10%<C<=-5%",IF($H4<=5%,"-5%<C<=5%",IF($H4>5%,">5%",""))))
         percent_change = None
         change_category = None
         if current_value is not None and previous_value is not None and previous_value != 0:
@@ -4180,7 +4183,7 @@ class HolisticScoringService:
         
         else:
             # Target NOT achieved - check performance change
-            # Excel formula: IF(AND(M13="No",N13="No",O13=">5%"),1,IF(AND(M13="No",N13="No",O13="5%<=C>-5%",P13="<=10%"),1,IF(AND(M13="No",N13="No",O13="5%<=C>-5%",P13="10%<PT<=40%"),0,IF(AND(M13="No",N13="No",O13="5%<=C>-5%",P13=">40%"),-1,IF(AND(M13="No",N13="No",O13="-10%<C<=-5%"),-1,IF(AND(M13="No",N13="No",O13="<=-10%"),-1))))))
+            # Excel formula: IF(AND(M13="No",N13="No",O13=">5%"),1,IF(AND(M13="No",N13="No",O13="-5%<C<=5%",P13="<=10%"),1,IF(AND(M13="No",N13="No",O13="-5%<C<=5%",P13="10%<PT<=40%"),0,IF(AND(M13="No",N13="No",O13="-5%<C<=5%",P13=">40%"),-1,IF(AND(M13="No",N13="No",O13="-10%<C<=-5%"),-1,IF(AND(M13="No",N13="No",O13="<=-10%"),-1))))))
             if change_category == ">5%":
                 logger.debug("  Score calculation: change_category='>5%' -> score=1")
                 return 1  # Excel: IF(AND(M13="No",N13="No",O13=">5%"),1,...)

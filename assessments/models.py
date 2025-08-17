@@ -897,7 +897,7 @@ class ScoringContext(models.Model):
     change_category = models.CharField(
         max_length=20, choices=[
             ('>5%', 'Improvement >5%'),
-            ('5%<=C>-5%', 'Stable (-5% to +5%)'),
+            ('-5%<C<=5%', 'Stable (-5% to +5%)'),
             ('-10%<C<=-5%', 'Small decline (-10% to -5%)'),
             ('<=-10%', 'Large decline (≤-10%)')
         ], null=True
