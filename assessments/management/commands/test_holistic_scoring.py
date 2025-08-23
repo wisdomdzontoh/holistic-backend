@@ -2,7 +2,7 @@ from django.core.management.base import BaseCommand
 from django.utils import timezone
 from indicators.models import TrackedIndicator
 from assessments.models import IndicatorScore, ScoringContext
-from assessments.services.scoring_service import HolisticScoringService
+from assessments.services import HolisticScoringService
 from configurations.models import AssessmentPeriod, Objective
 import logging
 

@@ -19,7 +19,7 @@ from .dashboard_serializers import (
     DashboardReportSerializer, DashboardAnalyticsSerializer, DashboardNotificationSerializer,
     DashboardAccessControlSerializer
 )
-from . import services
+from .services import DashboardService
 from organisation.services import AccessControlService
 from dhis2_auth.session import get_dhis2_user
 
@@ -32,7 +32,7 @@ class DashboardViewSet(viewsets.ViewSet):
     
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        self.dashboard_service = services.DashboardService()
+        self.dashboard_service = DashboardService()
         self.access_service = AccessControlService()
     
     @action(detail=False, methods=['get'])

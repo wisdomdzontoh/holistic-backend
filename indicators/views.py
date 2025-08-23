@@ -16,7 +16,7 @@ from .serializers import (
     IndicatorThresholdSerializer, IndicatorThresholdCreateSerializer,
     IndicatorSyncSerializer
 )
-from dhis2_auth.dhis_client import DHIS2Client
+from dhis2_auth.dhis_client import DHIS2Client, DHIS2ClientFactory
 from dhis2_auth.session import get_dhis2_session_data
 
 
@@ -85,9 +85,9 @@ class TrackedIndicatorViewSet(viewsets.ModelViewSet):
                 )
             
             # Create DHIS2 client
-            client = DHIS2Client(
-                instance_url=session_data['instance_url'],
-                session_key=session_key
+            client = DHIS2ClientFactory.create_client_from_session(
+                session_data['instance_url'],
+                session_key
             )
             
             # Sync indicator metadata
@@ -152,9 +152,9 @@ class TrackedIndicatorViewSet(viewsets.ModelViewSet):
                 )
             
             # Create DHIS2 client
-            client = DHIS2Client(
-                instance_url=session_data['instance_url'],
-                session_key=session_key
+            client = DHIS2ClientFactory.create_client_from_session(
+                session_data['instance_url'],
+                session_key
             )
             
             # Get indicators to sync

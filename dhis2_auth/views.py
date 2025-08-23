@@ -13,7 +13,7 @@ from .serializers import (
     LoginSerializer, LoginResponseSerializer, LogoutResponseSerializer,
     SessionStatusSerializer, UserInfoSerializer, OrgUnitSerializer
 )
-from .dhis_client import DHIS2Client
+from .dhis_client import DHIS2Client, DHIS2ClientFactory
 from .session import (
     create_dhis2_session, get_dhis2_session_data, logout_dhis2_user,
     is_dhis2_authenticated, get_dhis2_user, get_user_org_units, has_authority
@@ -319,9 +319,9 @@ class OrgUnitsView(APIView):
             session_data = get_dhis2_session_data(session_key)
             
             # Create DHIS2 client to get detailed org unit info
-            client = DHIS2Client(
-                instance_url=session_data['instance_url'],
-                session_key=session_key
+            client = DHIS2ClientFactory.create_client_from_session(
+                session_data['instance_url'],
+                session_key
             )
             
             # Get detailed org unit tree
@@ -371,9 +371,9 @@ class OrgUnitDescendantsView(APIView):
             session_data = get_dhis2_session_data(session_key)
             
             # Create DHIS2 client
-            client = DHIS2Client(
-                instance_url=session_data['instance_url'],
-                session_key=session_key
+            client = DHIS2ClientFactory.create_client_from_session(
+                session_data['instance_url'],
+                session_key
             )
             
             # Get descendants
@@ -423,9 +423,9 @@ class OrgUnitDetailView(APIView):
             session_data = get_dhis2_session_data(session_key)
             
             # Create DHIS2 client
-            client = DHIS2Client(
-                instance_url=session_data['instance_url'],
-                session_key=session_key
+            client = DHIS2ClientFactory.create_client_from_session(
+                session_data['instance_url'],
+                session_key
             )
             
             # Get single org unit
@@ -483,9 +483,9 @@ class OrgUnitChildrenView(APIView):
             session_data = get_dhis2_session_data(session_key)
             
             # Create DHIS2 client
-            client = DHIS2Client(
-                instance_url=session_data['instance_url'],
-                session_key=session_key
+            client = DHIS2ClientFactory.create_client_from_session(
+                session_data['instance_url'],
+                session_key
             )
             
             # Get children
