@@ -410,6 +410,11 @@ class HolisticAssessmentRequestSerializer(serializers.Serializer):
         required=True,
         help_text="List of organization unit IDs"
     )
+    org_unit_names = serializers.ListField(
+        child=serializers.CharField(max_length=255),
+        required=False,
+        help_text="List of organization unit names (optional - will be fetched from DHIS2 if not provided)"
+    )
     periods = serializers.ListField(
         required=True,
         help_text="List of periods (e.g., ['2021', '2022', '2023'])"

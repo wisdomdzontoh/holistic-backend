@@ -59,10 +59,12 @@ class RealTimeDHIS2Service:
             
             # Extract configuration
             org_unit_ids = assessment_config.get('org_unit_ids', [])
+            org_unit_names = assessment_config.get('org_unit_names', [])
             periods_raw = assessment_config.get('periods', [])
             indicator_uids = assessment_config.get('indicator_uids', [])
             manual_entries = assessment_config.get('manual_entries', {})
             pre_calculated_scores = assessment_config.get('pre_calculated_scores', {})
+            self.logger.info(f"Org unit names received: {org_unit_names}")
             
             # Handle periods - they can be strings or objects with 'code' field
             periods = []
@@ -996,10 +998,12 @@ class RealTimeDHIS2Service:
             
             # Extract configuration
             org_unit_ids = assessment_config.get('org_unit_ids', [])
+            org_unit_names = assessment_config.get('org_unit_names', [])
             periods_raw = assessment_config.get('periods', [])
             indicator_uids = assessment_config.get('indicator_uids', [])
             manual_entries = assessment_config.get('manual_entries', {})
             pre_calculated_scores = assessment_config.get('pre_calculated_scores', {})
+            self.logger.info(f"Org unit names received: {org_unit_names}")
             
             # Handle periods - they can be strings or objects with 'code' field
             periods = []
@@ -1451,9 +1455,18 @@ class RealTimeDHIS2Service:
                     assessment_data['objectives'].append(objective_data)
             
             # Return as array to match frontend expectations  
+            # Use provided org unit names if available, otherwise fetch from DHIS2
+            org_unit_name = None
+            if org_unit_names and len(org_unit_names) > 0:
+                org_unit_name = org_unit_names[0]
+                self.logger.info(f"Using provided org unit name: {org_unit_name}")
+            else:
+                org_unit_name = self._get_org_unit_name(org_unit_ids[0])
+                self.logger.info(f"Fetched org unit name from DHIS2: {org_unit_name}")
+            
             return [{
                 'org_unit_id': org_unit_ids[0],
-                'org_unit_name': self._get_org_unit_name(org_unit_ids[0]),
+                'org_unit_name': org_unit_name,
                 'assessment_period': {
                     'id': 1,
                     'name': f"{periods[0]} to {periods[-1]}" if len(periods) > 1 else periods[0],
