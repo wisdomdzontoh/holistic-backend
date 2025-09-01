@@ -225,9 +225,14 @@ class RealTimeDHIS2Service:
             return ('#FFC7CE', 'Underperforming')
         return ('#FF0000', 'Severely Underperforming')
 
-    def generate_holistic_excel(self, assessment_payload: list) -> str:
+    def generate_holistic_excel(self, assessment_payload: list, manual_entries: dict = None, pre_calculated_scores: dict = None) -> str:
         """Generate an Excel file that mirrors the table format with color coding.
         Returns the absolute file path of the saved workbook.
+        
+        Args:
+            assessment_payload: Assessment data list
+            manual_entries: Dict of manual entries by indicator ID and period (for compatibility)
+            pre_calculated_scores: Dict of pre-calculated scores by indicator ID (for compatibility)
         """
         try:
             from openpyxl import Workbook

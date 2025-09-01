@@ -1495,11 +1495,18 @@ class HolisticAssessmentViewSet(viewsets.ViewSet):
             serializer = HolisticAssessmentRequestSerializer(data=request.data)
             serializer.is_valid(raise_exception=True)
             
+            # Extract manual entries and pre-calculated scores from request data
+            manual_entries = request.data.get('manual_entries', {})
+            pre_calculated_scores = request.data.get('pre_calculated_scores', {})
+            
+            logger.info(f"Manual entries for export: {manual_entries}")
+            logger.info(f"Pre-calculated scores for export: {pre_calculated_scores}")
+            
             logger.info("Fetching assessment data for export...")
             payload = self.realtime_service.fetch_holistic_assessment_data(request, serializer.validated_data)
             
             logger.info("Generating Excel file...")
-            file_path = self.realtime_service.generate_holistic_excel(payload)
+            file_path = self.realtime_service.generate_holistic_excel(payload, manual_entries, pre_calculated_scores)
             
             # Read the file content
             import os

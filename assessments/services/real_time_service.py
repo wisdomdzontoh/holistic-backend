@@ -186,12 +186,14 @@ class RealTimeDHIS2Service:
                         # Apply manual entries if available for this indicator
                         if manual_entries and str(indicator.id) in manual_entries:
                             indicator_manual_entries = manual_entries[str(indicator.id)]
+                            logger.info(f"Applying manual entries for indicator {indicator.id}: {indicator_manual_entries}")
                             
                             for period_code, manual_value in indicator_manual_entries.items():
                                 if period_code in indicator_data['data_values']:
-                                    # Apply manual override
+                                    # Apply manual override - this is the key fix
                                     indicator_data['data_values'][period_code]['value'] = manual_value
                                     indicator_data['data_values'][period_code]['manual_override'] = manual_value
+                                    logger.info(f"Applied manual value {manual_value} for indicator {indicator.id} period {period_code}")
                         
                         # Compute percent_change and target_gap for latest vs previous period
                         try:
@@ -1128,12 +1130,14 @@ class RealTimeDHIS2Service:
                         # Apply manual entries if available for this indicator
                         if manual_entries and str(indicator.id) in manual_entries:
                             indicator_manual_entries = manual_entries[str(indicator.id)]
+                            logger.info(f"Applying manual entries for indicator {indicator.id}: {indicator_manual_entries}")
                             
                             for period_code, manual_value in indicator_manual_entries.items():
                                 if period_code in indicator_data['data_values']:
-                                    # Apply manual override
+                                    # Apply manual override - this is the key fix
                                     indicator_data['data_values'][period_code]['value'] = manual_value
                                     indicator_data['data_values'][period_code]['manual_override'] = manual_value
+                                    logger.info(f"Applied manual value {manual_value} for indicator {indicator.id} period {period_code}")
                         
                         # Compute percent_change and target_gap for latest vs previous period
                         try:
@@ -1335,12 +1339,14 @@ class RealTimeDHIS2Service:
                         # Apply manual entries if available for this indicator
                         if manual_entries and str(indicator.id) in manual_entries:
                             indicator_manual_entries = manual_entries[str(indicator.id)]
+                            logger.info(f"Applying manual entries for indicator {indicator.id}: {indicator_manual_entries}")
                             
                             for period_code, manual_value in indicator_manual_entries.items():
                                 if period_code in indicator_data['data_values']:
-                                    # Apply manual override
+                                    # Apply manual override - this is the key fix
                                     indicator_data['data_values'][period_code]['value'] = manual_value
                                     indicator_data['data_values'][period_code]['manual_override'] = manual_value
+                                    logger.info(f"Applied manual value {manual_value} for indicator {indicator.id} period {period_code}")
                         
                         # Compute percent_change and target_gap for latest vs previous period
                         try:
@@ -1480,12 +1486,14 @@ class RealTimeDHIS2Service:
             self.logger.error(f"Error fetching holistic assessment data: {str(e)}")
             raise
     
-    def generate_holistic_excel(self, assessment_payload: list) -> str:
+    def generate_holistic_excel(self, assessment_payload: list, manual_entries: dict = None, pre_calculated_scores: dict = None) -> str:
         """
         Generate Excel file from assessment data.
         
         Args:
             assessment_payload: Assessment data list (format from fetch_holistic_assessment_data)
+            manual_entries: Dict of manual entries by indicator ID and period
+            pre_calculated_scores: Dict of pre-calculated scores by indicator ID
             
         Returns:
             Path to the generated Excel file
@@ -1502,6 +1510,25 @@ class RealTimeDHIS2Service:
             raise
 
         try:
+            # Apply manual entries to the assessment data before generating Excel
+            if manual_entries:
+                self.logger.info(f"Applying manual entries to Excel export: {manual_entries}")
+                for indicator_id, period_entries in manual_entries.items():
+                    # Find the indicator in the assessment data
+                    for period_data in assessment_payload:
+                        for objective in period_data.get('objectives', []):
+                            for indicator in objective.get('indicators', []):
+                                if str(indicator.get('id')) == str(indicator_id):
+                                    # Apply manual entries for each period
+                                    for period_code, manual_value in period_entries.items():
+                                        if period_code in indicator.get('data_values', {}):
+                                            # Update the data_values to include manual override
+                                            indicator['data_values'][period_code]['manual_override'] = manual_value
+                                            # Also update the main value to ensure it's used in Excel
+                                            indicator['data_values'][period_code]['value'] = manual_value
+                                            self.logger.info(f"Applied manual entry {manual_value} for indicator {indicator_id} period {period_code}")
+                                    break
+
             wb = Workbook()
             ws = wb.active
             ws.title = 'Table'
@@ -1580,7 +1607,9 @@ class RealTimeDHIS2Service:
                     row_values.append(ind.get('name'))
                     # periods
                     for p in periods:
-                        v = ind.get('data_values', {}).get(p, {}).get('value')
+                        data_value = ind.get('data_values', {}).get(p, {})
+                        # Prioritize manual override over DHIS2 value
+                        v = data_value.get('manual_override') if data_value.get('manual_override') is not None else data_value.get('value')
                         row_values.append(v)
                     # change/gap - format with % symbol
                     sc = ind.get('score') or {}
@@ -1615,6 +1644,8 @@ class RealTimeDHIS2Service:
                     for c in range(1, len(row_values) + 1):
                         cell = ws.cell(row=row, column=c)
                         cell.border = border
+                        
+
                         
                         # Apply score color to score column (second to last column)
                         if c == len(row_values) - 1 and score_value is not None:  # Score column
