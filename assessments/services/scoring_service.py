@@ -71,21 +71,31 @@ class HolisticScoringService:
         # Step 6: Calculate final score based on the flowchart logic
         score = self._calculate_final_score(
             data_provided_flag, is_first_year, target_achieved, 
-            change_category, gap_category, indicator
+            change_category, gap_category, indicator, current_value
         )
         
-        # Debug logging
-        logger.debug(f"Scoring Debug for Indicator {indicator.id} ({indicator.name}):")
-        logger.debug(f"  target_type: {indicator.target_type}")
-        logger.debug(f"  target_operator: {indicator.target_operator}")
-        logger.debug(f"  target_value: {indicator.target_value}")
-        logger.debug(f"  current_value: {current_value}")
-        logger.debug(f"  previous_value: {previous_value}")
-        logger.debug(f"  percent_change: {percent_change}")
-        logger.debug(f"  target_achieved: {target_achieved}")
-        logger.debug(f"  change_category: {change_category}")
-        logger.debug(f"  gap_category: {gap_category}")
-        logger.debug(f"  final_score: {score}")
+        # Enhanced debug logging
+        logger.info(f"=== SCORING DEBUG for Indicator {indicator.id} ({indicator.name}) ===")
+        logger.info(f"  target_type: {indicator.target_type}")
+        logger.info(f"  target_operator: {indicator.target_operator}")
+        logger.info(f"  target_value: {indicator.target_value}")
+        logger.info(f"  current_value: {current_value}")
+        logger.info(f"  previous_value: {previous_value}")
+        logger.info(f"  data_provided_flag: {data_provided_flag}")
+        logger.info(f"  is_first_year: {is_first_year}")
+        logger.info(f"  target_achieved: {target_achieved}")
+        logger.info(f"  percent_change: {percent_change}")
+        logger.info(f"  change_category: {change_category}")
+        logger.info(f"  target_gap: {target_gap}")
+        logger.info(f"  gap_category: {gap_category}")
+        logger.info(f"  FINAL_SCORE: {score}")
+        
+        # Special logging for decrease indicators with zero values
+        if indicator.target_type == 'decrease' and current_value is not None and current_value == 0:
+            logger.info(f"  *** DECREASE INDICATOR WITH ZERO VALUE DETECTED ***")
+            logger.info(f"  *** This should trigger score = 2 ***")
+        
+        logger.info(f"=== END SCORING DEBUG ===")
         
         return {
             'score': score,
@@ -325,7 +335,8 @@ class HolisticScoringService:
         target_achieved: str,
         change_category: Optional[str],
         gap_category: Optional[str],
-        indicator: TrackedIndicator
+        indicator: TrackedIndicator,
+        current_value: Optional[float] = None
     ) -> int:
         """
         Calculate final score based on the flowchart logic.
@@ -337,6 +348,7 @@ class HolisticScoringService:
             change_category: Change category
             gap_category: Gap category
             indicator: Indicator instance
+            current_value: Current value for special case handling
             
         Returns:
             Final score
@@ -348,10 +360,16 @@ class HolisticScoringService:
         logger.debug(f"  target_achieved: {target_achieved}")
         logger.debug(f"  change_category: {change_category}")
         logger.debug(f"  gap_category: {gap_category}")
+        logger.debug(f"  current_value: {current_value}")
         
         # Special case: Decrease indicator with current value = 0 (excellent performance)
+        # When current value is 0 for a decrease indicator, it means the best possible outcome
+        # Since PT gap analysis and change can't be calculated, assign score of 2
         if (indicator.target_type == 'decrease' and 
-            hasattr(indicator, 'current_value') and indicator.current_value == 0):
+            current_value is not None and 
+            (current_value == 0 or current_value == 0.0 or str(current_value) == '0')):
+            logger.info("  *** SPECIAL CASE TRIGGERED: Decrease indicator with current value = 0 -> score=2 ***")
+            logger.info(f"  *** current_value type: {type(current_value)}, value: {current_value} ***")
             return 2
         
         # Decision 1: Was data provided?

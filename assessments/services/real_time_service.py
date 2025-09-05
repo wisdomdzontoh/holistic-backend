@@ -282,7 +282,7 @@ class RealTimeDHIS2Service:
                                     previous_meets = None
                                 
                                 has_data = curr_val is not None
-                                trend_score = self._compute_trend_score(has_data, current_meets, previous_meets, change_cat, gap_cat, indicator)
+                                trend_score = self._compute_trend_score(has_data, current_meets, previous_meets, change_cat, gap_cat, indicator, curr_val)
                                 # Derive a simple indicator score from categories/trend if not provided by DB
                                 derived_score = trend_score
                                 color, label = self._score_color_label(derived_score)
@@ -706,38 +706,43 @@ class RealTimeDHIS2Service:
     
     def _calculate_indicator_score(self, data: Dict[str, Any]) -> float:
         """
-        Calculate score for an indicator based on its data.
+        Calculate score for an indicator using the Holistic Assessment algorithm.
         
         Args:
             data: Indicator data with current, previous, and target values
             
         Returns:
-            Score between 0 and 1
+            Score between -2 and 2 (Holistic Assessment scale)
         """
         try:
-            current_value = data.get('current_value')
-            target_value = data.get('target_value')
-            percentage_change = data.get('percentage_change', 0)
+            from .scoring_service import HolisticScoringService
+            from indicators.models import TrackedIndicator
             
-            if current_value is None:
+            # Get indicator details
+            indicator_uid = data.get('uid')
+            current_value = data.get('current_value')
+            previous_value = data.get('previous_value')
+            
+            if not indicator_uid:
                 return 0.0
             
-            # Base score from target achievement
-            if target_value and target_value > 0:
-                target_achievement = min(current_value / target_value, 1.0)
-            else:
-                target_achievement = 0.5  # Default if no target
+            # Get the TrackedIndicator instance
+            try:
+                indicator = TrackedIndicator.objects.get(dhis2_uid=indicator_uid)
+            except TrackedIndicator.DoesNotExist:
+                self.logger.warning(f"Indicator with UID {indicator_uid} not found")
+                return 0.0
             
-            # Adjust score based on percentage change
-            change_bonus = 0
-            if percentage_change > 0:
-                change_bonus = min(percentage_change / 100, 0.2)  # Max 20% bonus
-            elif percentage_change < 0:
-                change_bonus = max(percentage_change / 100, -0.2)  # Max 20% penalty
+            # Use the HolisticScoringService
+            scoring_service = HolisticScoringService()
+            result = scoring_service.calculate_indicator_score(
+                indicator=indicator,
+                current_value=current_value,
+                previous_value=previous_value,
+                data_provided=current_value is not None
+            )
             
-            # Calculate final score
-            final_score = target_achievement + change_bonus
-            return max(0.0, min(1.0, final_score))  # Clamp between 0 and 1
+            return result['score']
             
         except Exception as e:
             self.logger.error(f"Error calculating indicator score: {str(e)}")
@@ -1226,7 +1231,7 @@ class RealTimeDHIS2Service:
                                     previous_meets = None
                                 
                                 has_data = curr_val is not None
-                                trend_score = self._compute_trend_score(has_data, current_meets, previous_meets, change_cat, gap_cat, indicator)
+                                trend_score = self._compute_trend_score(has_data, current_meets, previous_meets, change_cat, gap_cat, indicator, curr_val)
                                 # Derive a simple indicator score from categories/trend if not provided by DB
                                 derived_score = trend_score
                                 color, label = self._score_color_label(derived_score)
@@ -1435,7 +1440,7 @@ class RealTimeDHIS2Service:
                                     previous_meets = None
                                 
                                 has_data = curr_val is not None
-                                trend_score = self._compute_trend_score(has_data, current_meets, previous_meets, change_cat, gap_cat, indicator)
+                                trend_score = self._compute_trend_score(has_data, current_meets, previous_meets, change_cat, gap_cat, indicator, curr_val)
                                 # Derive a simple indicator score from categories/trend if not provided by DB
                                 derived_score = trend_score
                                 color, label = self._score_color_label(derived_score)
@@ -1800,60 +1805,85 @@ class RealTimeDHIS2Service:
         return None
 
     def _compute_trend_score(self, has_data: bool, current_meets: bool | None, previous_meets: bool | None,
-                              change_cat: str | None, gap_cat: str | None, indicator=None) -> int:
+                              change_cat: str | None, gap_cat: str | None, indicator=None, current_value=None) -> int:
         """Use the updated HolisticScoringService algorithm for real-time scoring."""
-        # Step 1: Data provided check
-        if not has_data:
-            return -2
-        
-        # Step 2: First year check (simplified - assume not first year if we have previous data)
-        is_first_year = previous_meets is None
-        
-        # Step 3: Target achieved check
-        target_achieved = "Yes" if current_meets else "No"
-        
-        # Simplified version of the Excel outcome formula
-        if is_first_year:
-            if target_achieved == "Yes":
-                return 1
-            else:
-                return 0
-        else:
-            # Not first year - use the complex logic
-            if target_achieved == "Yes":
-                # Target WAS achieved - check performance change
-                if change_cat == ">5%":
-                    return 2
-                elif change_cat == "-5%<C<=5%":
-                    # For stagnation, when target is achieved, score should be 2
-                    return 2
-                elif change_cat == "-10%<C<=-5%":
-                    # For negative change, score lower even if target is achieved
+        try:
+            from .scoring_service import HolisticScoringService
+            
+            # If we have an indicator instance, use the proper HolisticScoringService
+            if indicator and hasattr(indicator, 'target_type'):
+                scoring_service = HolisticScoringService()
+                
+                # Get previous value from the indicator data if available
+                previous_value = None
+                if hasattr(indicator, 'previous_value'):
+                    previous_value = indicator.previous_value
+                
+                result = scoring_service.calculate_indicator_score(
+                    indicator=indicator,
+                    current_value=current_value,
+                    previous_value=previous_value,
+                    data_provided=has_data
+                )
+                
+                return result['score']
+            
+            # Fallback to simplified logic if no indicator instance
+            # Step 1: Data provided check
+            if not has_data:
+                return -2
+            
+            # Step 2: First year check (simplified - assume not first year if we have previous data)
+            is_first_year = previous_meets is None
+            
+            # Step 3: Target achieved check
+            target_achieved = "Yes" if current_meets else "No"
+            
+            # Simplified version of the Excel outcome formula
+            if is_first_year:
+                if target_achieved == "Yes":
                     return 1
-                elif change_cat == "<=-10%":
-                    return 0
                 else:
                     return 0
             else:
-                # Target NOT achieved - check performance change
-                if change_cat == ">5%":
-                    return 1
-                elif change_cat == "-5%<C<=5%":
-                    # Stagnation - check how close to target
-                    if gap_cat == "<=10%":
+                # Not first year - use the complex logic
+                if target_achieved == "Yes":
+                    # Target WAS achieved - check performance change
+                    if change_cat == ">5%":
+                        return 2
+                    elif change_cat == "-5%<C<=5%":
+                        # For stagnation, when target is achieved, score should be 2
+                        return 2
+                    elif change_cat == "-10%<C<=-5%":
+                        # For negative change, score lower even if target is achieved
                         return 1
-                    elif gap_cat == "10%<PT<=40%":
+                    elif change_cat == "<=-10%":
                         return 0
-                    elif gap_cat == ">40%":
+                    else:
+                        return 0
+                else:
+                    # Target NOT achieved - check performance change
+                    if change_cat == ">5%":
+                        return 1
+                    elif change_cat == "-5%<C<=5%":
+                        # Stagnation - check how close to target
+                        if gap_cat == "<=10%":
+                            return 1
+                        elif gap_cat == "10%<PT<=40%":
+                            return 0
+                        elif gap_cat == ">40%":
+                            return -1
+                        else:
+                            return 0
+                    elif change_cat == "-10%<C<=-5%":
+                        return -1
+                    elif change_cat == "<=-10%":
                         return -1
                     else:
                         return 0
-                elif change_cat == "-10%<C<=-5%":
-                    return -1
-                elif change_cat == "<=-10%":
-                    return -1
-                else:
-                    return 0
+        except Exception as e:
+            self.logger.error(f"Error in _compute_trend_score: {str(e)}")
+            return 0
 
     def _median(self, numbers: list[float]) -> float | None:
         vals = [float(x) for x in numbers if x is not None and isinstance(x, (int, float))]
