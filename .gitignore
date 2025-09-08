@@ -2,3 +2,4 @@
 .env
 /media/
 .env.txt
+db.sqlite3

@@ -261,28 +261,12 @@ class RealTimeDHIS2Service:
                                 change_cat = self._classify_change_category(change_pct, indicator.target_type)
                                 gap_cat = self._classify_gap_category(gap_pct)
                                 
-                                # For M/N we use meet-threshold as curr >= target for increase, curr <= target for decrease
-                                current_meets = None
-                                previous_meets = None
-                                try:
-                                    if curr_val is not None and tgt not in (None,):
-                                        if indicator.target_type == 'increase':
-                                            current_meets = float(curr_val) >= float(tgt)
-                                        else:
-                                            current_meets = float(curr_val) <= float(tgt)
-                                except Exception:
-                                    current_meets = None
-                                try:
-                                    if prev_val is not None and tgt not in (None,):
-                                        if indicator.target_type == 'increase':
-                                            previous_meets = float(prev_val) >= float(tgt)
-                                        else:
-                                            previous_meets = float(prev_val) <= float(tgt)
-                                except Exception:
-                                    previous_meets = None
+                                # Use comprehensive target achievement logic from HolisticScoringService
+                                current_meets = self._check_target_achievement_comprehensive(curr_val, indicator)
+                                previous_meets = self._check_target_achievement_comprehensive(prev_val, indicator)
                                 
                                 has_data = curr_val is not None
-                                trend_score = self._compute_trend_score(has_data, current_meets, previous_meets, change_cat, gap_cat, indicator, curr_val)
+                                trend_score = self._compute_trend_score(has_data, current_meets, previous_meets, change_cat, gap_cat, indicator, curr_val, prev_val)
                                 # Derive a simple indicator score from categories/trend if not provided by DB
                                 derived_score = trend_score
                                 color, label = self._score_color_label(derived_score)
@@ -1210,28 +1194,12 @@ class RealTimeDHIS2Service:
                                 change_cat = self._classify_change_category(change_pct, indicator.target_type)
                                 gap_cat = self._classify_gap_category(gap_pct)
                                 
-                                # For M/N we use meet-threshold as curr >= target for increase, curr <= target for decrease
-                                current_meets = None
-                                previous_meets = None
-                                try:
-                                    if curr_val is not None and tgt not in (None,):
-                                        if indicator.target_type == 'increase':
-                                            current_meets = float(curr_val) >= float(tgt)
-                                        else:
-                                            current_meets = float(curr_val) <= float(tgt)
-                                except Exception:
-                                    current_meets = None
-                                try:
-                                    if prev_val is not None and tgt not in (None,):
-                                        if indicator.target_type == 'increase':
-                                            previous_meets = float(prev_val) >= float(tgt)
-                                        else:
-                                            previous_meets = float(prev_val) <= float(tgt)
-                                except Exception:
-                                    previous_meets = None
+                                # Use comprehensive target achievement logic from HolisticScoringService
+                                current_meets = self._check_target_achievement_comprehensive(curr_val, indicator)
+                                previous_meets = self._check_target_achievement_comprehensive(prev_val, indicator)
                                 
                                 has_data = curr_val is not None
-                                trend_score = self._compute_trend_score(has_data, current_meets, previous_meets, change_cat, gap_cat, indicator, curr_val)
+                                trend_score = self._compute_trend_score(has_data, current_meets, previous_meets, change_cat, gap_cat, indicator, curr_val, prev_val)
                                 # Derive a simple indicator score from categories/trend if not provided by DB
                                 derived_score = trend_score
                                 color, label = self._score_color_label(derived_score)
@@ -1419,28 +1387,12 @@ class RealTimeDHIS2Service:
                                 change_cat = self._classify_change_category(change_pct, indicator.target_type)
                                 gap_cat = self._classify_gap_category(gap_pct)
                                 
-                                # For M/N we use meet-threshold as curr >= target for increase, curr <= target for decrease
-                                current_meets = None
-                                previous_meets = None
-                                try:
-                                    if curr_val is not None and tgt not in (None,):
-                                        if indicator.target_type == 'increase':
-                                            current_meets = float(curr_val) >= float(tgt)
-                                        else:
-                                            current_meets = float(curr_val) <= float(tgt)
-                                except Exception:
-                                    current_meets = None
-                                try:
-                                    if prev_val is not None and tgt not in (None,):
-                                        if indicator.target_type == 'increase':
-                                            previous_meets = float(prev_val) >= float(tgt)
-                                        else:
-                                            previous_meets = float(prev_val) <= float(tgt)
-                                except Exception:
-                                    previous_meets = None
+                                # Use comprehensive target achievement logic from HolisticScoringService
+                                current_meets = self._check_target_achievement_comprehensive(curr_val, indicator)
+                                previous_meets = self._check_target_achievement_comprehensive(prev_val, indicator)
                                 
                                 has_data = curr_val is not None
-                                trend_score = self._compute_trend_score(has_data, current_meets, previous_meets, change_cat, gap_cat, indicator, curr_val)
+                                trend_score = self._compute_trend_score(has_data, current_meets, previous_meets, change_cat, gap_cat, indicator, curr_val, prev_val)
                                 # Derive a simple indicator score from categories/trend if not provided by DB
                                 derived_score = trend_score
                                 color, label = self._score_color_label(derived_score)
@@ -1805,7 +1757,7 @@ class RealTimeDHIS2Service:
         return None
 
     def _compute_trend_score(self, has_data: bool, current_meets: bool | None, previous_meets: bool | None,
-                              change_cat: str | None, gap_cat: str | None, indicator=None, current_value=None) -> int:
+                              change_cat: str | None, gap_cat: str | None, indicator=None, current_value=None, previous_value=None) -> int:
         """Use the updated HolisticScoringService algorithm for real-time scoring."""
         try:
             from .scoring_service import HolisticScoringService
@@ -1813,11 +1765,6 @@ class RealTimeDHIS2Service:
             # If we have an indicator instance, use the proper HolisticScoringService
             if indicator and hasattr(indicator, 'target_type'):
                 scoring_service = HolisticScoringService()
-                
-                # Get previous value from the indicator data if available
-                previous_value = None
-                if hasattr(indicator, 'previous_value'):
-                    previous_value = indicator.previous_value
                 
                 result = scoring_service.calculate_indicator_score(
                     indicator=indicator,
@@ -2495,3 +2442,70 @@ class RealTimeDHIS2Service:
         except Exception as e:
             self.logger.warning(f"Error getting org unit name for {org_unit_id}: {str(e)}")
             return f"Org Unit {org_unit_id}"
+    
+    def _check_target_achievement_comprehensive(self, current_value: Optional[float], indicator) -> bool:
+        """
+        Check if target was achieved using comprehensive logic from HolisticScoringService.
+        
+        Args:
+            current_value: Current value
+            indicator: Indicator instance
+            
+        Returns:
+            True if target was achieved, False otherwise
+        """
+        if current_value is None:
+            return False
+        
+        try:
+            current_val = float(current_value)
+            
+            # Handle different target formats
+            if hasattr(indicator, 'target_format') and indicator.target_format == 'RANGE':
+                # Range target: check if current value is within the range
+                if indicator.target_lower_limit is not None and indicator.target_upper_limit is not None:
+                    lower_limit = float(indicator.target_lower_limit)
+                    upper_limit = float(indicator.target_upper_limit)
+                    return lower_limit <= current_val <= upper_limit
+                else:
+                    # Fallback to single target value
+                    if indicator.target_value is not None:
+                        target_float = float(indicator.target_value)
+                        if indicator.target_type == 'decrease':
+                            return current_val <= target_float
+                        else:
+                            return current_val >= target_float
+            elif hasattr(indicator, 'target_format') and indicator.target_format == 'MINIMUM':
+                # Minimum target: current value should be >= target_value
+                if indicator.target_value is not None:
+                    target_float = float(indicator.target_value)
+                    return current_val >= target_float
+            elif hasattr(indicator, 'target_format') and indicator.target_format == 'MAXIMUM':
+                # Maximum target: current value should be <= target_value
+                if indicator.target_value is not None:
+                    target_float = float(indicator.target_value)
+                    return current_val <= target_float
+            else:
+                # Single value target: use the target_operator
+                if indicator.target_value is not None:
+                    target_float = float(indicator.target_value)
+                    
+                    # Use the target_operator to determine achievement
+                    if indicator.target_operator == '>=':
+                        return current_val >= target_float
+                    elif indicator.target_operator == '>':
+                        return current_val > target_float
+                    elif indicator.target_operator == '<=':
+                        return current_val <= target_float
+                    elif indicator.target_operator == '<':
+                        return current_val < target_float
+                    elif indicator.target_operator == '=':
+                        return current_val == target_float
+                    else:
+                        # Default to >= for backward compatibility
+                        return current_val >= target_float
+            
+            return False
+            
+        except Exception:
+            return False
