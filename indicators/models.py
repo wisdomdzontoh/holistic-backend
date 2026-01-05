@@ -83,7 +83,7 @@ class TrackedIndicator(models.Model):
     # Target and scoring
     target_value = models.DecimalField(
         max_digits=10,
-        decimal_places=2,
+        decimal_places=3,
         null=True,
         blank=True,
         help_text="Target value for this indicator (single value or upper bound for ranges)"

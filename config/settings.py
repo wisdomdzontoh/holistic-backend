@@ -137,19 +137,19 @@ WSGI_APPLICATION = 'config.wsgi.application'
 
 
 # PostgreSQL configuration (for production)
-try:
-    import dj_database_url
-    DATABASES = {
-        'default': dj_database_url.parse(env('DATABASE_URL'))
-    }
-except ImportError:
+# try:
+#     import dj_database_url
+#     DATABASES = {
+#         'default': dj_database_url.parse(env('DATABASE_URL'))
+#     }
+# except ImportError:
     # Fallback to SQLite for development
-    DATABASES = {
-        'default': {
-            'ENGINE': 'django.db.backends.sqlite3',
-            'NAME': BASE_DIR / 'db.sqlite3',
-        }
+DATABASES = {
+    'default': {
+        'ENGINE': 'django.db.backends.sqlite3',
+        'NAME': BASE_DIR / 'db.sqlite3',
     }
+}
 
 
 #CORS Settings
