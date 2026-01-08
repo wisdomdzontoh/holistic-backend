@@ -1,6 +1,7 @@
 from django.contrib import admin
 from django.utils.html import format_html
 from django.utils import timezone
+from import_export.admin import ImportExportModelAdmin
 from .models import (
     ExportTemplate, ExportJob, ExportSchedule, ExportLog, ExportConfiguration
 )
@@ -21,7 +22,7 @@ class ExportLogInline(admin.TabularInline):
 
 
 @admin.register(ExportTemplate)
-class ExportTemplateAdmin(admin.ModelAdmin):
+class ExportTemplateAdmin(ImportExportModelAdmin):
     """
     Admin for export templates
     """
@@ -83,7 +84,7 @@ class ExportTemplateAdmin(admin.ModelAdmin):
 
 
 @admin.register(ExportJob)
-class ExportJobAdmin(admin.ModelAdmin):
+class ExportJobAdmin(ImportExportModelAdmin):
     """
     Admin for export jobs
     """
@@ -182,7 +183,7 @@ class ExportJobAdmin(admin.ModelAdmin):
 
 
 @admin.register(ExportSchedule)
-class ExportScheduleAdmin(admin.ModelAdmin):
+class ExportScheduleAdmin(ImportExportModelAdmin):
     """
     Admin for export schedules
     """
@@ -249,7 +250,7 @@ class ExportScheduleAdmin(admin.ModelAdmin):
 
 
 @admin.register(ExportLog)
-class ExportLogAdmin(admin.ModelAdmin):
+class ExportLogAdmin(ImportExportModelAdmin):
     """
     Admin for export logs
     """
@@ -299,7 +300,7 @@ class ExportLogAdmin(admin.ModelAdmin):
 
 
 @admin.register(ExportConfiguration)
-class ExportConfigurationAdmin(admin.ModelAdmin):
+class ExportConfigurationAdmin(ImportExportModelAdmin):
     """
     Admin for export configurations
     """

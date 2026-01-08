@@ -1,6 +1,7 @@
 from django.contrib import admin
 from django.utils.html import format_html
 from django.utils import timezone
+from import_export.admin import ImportExportModelAdmin
 from .models import (
     Milestone, Objective, ScoringRule, WeightingScheme, ObjectiveWeight, 
     IndicatorWeight, AssessmentPeriod, SystemConfiguration
@@ -29,7 +30,7 @@ class IndicatorWeightInline(admin.TabularInline):
 
 
 @admin.register(Objective)
-class ObjectiveAdmin(admin.ModelAdmin):
+class ObjectiveAdmin(ImportExportModelAdmin):
     """
     Admin interface for objectives
     """
@@ -89,7 +90,7 @@ class ObjectiveAdmin(admin.ModelAdmin):
 
 
 @admin.register(Milestone)
-class MilestoneAdmin(admin.ModelAdmin):
+class MilestoneAdmin(ImportExportModelAdmin):
     """
     Admin interface for milestones
     """
@@ -148,7 +149,7 @@ class MilestoneAdmin(admin.ModelAdmin):
 
 
 @admin.register(ScoringRule)
-class ScoringRuleAdmin(admin.ModelAdmin):
+class ScoringRuleAdmin(ImportExportModelAdmin):
     """
     Admin interface for scoring rules
     """
@@ -218,7 +219,7 @@ class ScoringRuleAdmin(admin.ModelAdmin):
 
 
 @admin.register(WeightingScheme)
-class WeightingSchemeAdmin(admin.ModelAdmin):
+class WeightingSchemeAdmin(ImportExportModelAdmin):
     """
     Admin interface for weighting schemes
     """
@@ -281,7 +282,7 @@ class WeightingSchemeAdmin(admin.ModelAdmin):
 
 
 @admin.register(ObjectiveWeight)
-class ObjectiveWeightAdmin(admin.ModelAdmin):
+class ObjectiveWeightAdmin(ImportExportModelAdmin):
     """
     Admin interface for objective weights
     """
@@ -300,7 +301,7 @@ class ObjectiveWeightAdmin(admin.ModelAdmin):
 
 
 @admin.register(IndicatorWeight)
-class IndicatorWeightAdmin(admin.ModelAdmin):
+class IndicatorWeightAdmin(ImportExportModelAdmin):
     """
     Admin interface for indicator weights
     """
@@ -319,7 +320,7 @@ class IndicatorWeightAdmin(admin.ModelAdmin):
 
 
 @admin.register(AssessmentPeriod)
-class AssessmentPeriodAdmin(admin.ModelAdmin):
+class AssessmentPeriodAdmin(ImportExportModelAdmin):
     """
     Admin interface for assessment periods
     """
@@ -418,7 +419,7 @@ class AssessmentPeriodAdmin(admin.ModelAdmin):
 
 
 @admin.register(SystemConfiguration)
-class SystemConfigurationAdmin(admin.ModelAdmin):
+class SystemConfigurationAdmin(ImportExportModelAdmin):
     """
     Admin interface for system configurations
     """

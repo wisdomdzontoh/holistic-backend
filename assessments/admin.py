@@ -3,6 +3,7 @@ from django.utils.html import format_html
 from django.urls import reverse
 from django.utils.safestring import mark_safe
 from django.utils import timezone
+from import_export.admin import ImportExportModelAdmin
 from .models import (
     DataSyncLog, IndicatorData, IndicatorScore, ObjectiveScore, 
     SectorScore, SavedAssessment, AuditLog, ConflictResolution, ScoringContext
@@ -21,7 +22,7 @@ class IndicatorDataInline(admin.TabularInline):
 
 
 @admin.register(DataSyncLog)
-class DataSyncLogAdmin(admin.ModelAdmin):
+class DataSyncLogAdmin(ImportExportModelAdmin):
     """
     Admin interface for data sync logs
     """
@@ -100,7 +101,7 @@ class DataSyncLogAdmin(admin.ModelAdmin):
 
 
 @admin.register(IndicatorData)
-class IndicatorDataAdmin(admin.ModelAdmin):
+class IndicatorDataAdmin(ImportExportModelAdmin):
     """
     Admin interface for indicator data
     """
@@ -132,7 +133,7 @@ class IndicatorDataAdmin(admin.ModelAdmin):
 
 
 @admin.register(IndicatorScore)
-class IndicatorScoreAdmin(admin.ModelAdmin):
+class IndicatorScoreAdmin(ImportExportModelAdmin):
     """
     Admin interface for indicator scores
     """
@@ -203,7 +204,7 @@ class IndicatorScoreAdmin(admin.ModelAdmin):
 
 
 @admin.register(ObjectiveScore)
-class ObjectiveScoreAdmin(admin.ModelAdmin):
+class ObjectiveScoreAdmin(ImportExportModelAdmin):
     """
     Admin interface for objective scores
     """
@@ -258,7 +259,7 @@ class ObjectiveScoreAdmin(admin.ModelAdmin):
 
 
 @admin.register(SectorScore)
-class SectorScoreAdmin(admin.ModelAdmin):
+class SectorScoreAdmin(ImportExportModelAdmin):
     """
     Admin interface for sector scores
     """
@@ -310,7 +311,7 @@ class SectorScoreAdmin(admin.ModelAdmin):
 
 
 @admin.register(SavedAssessment)
-class SavedAssessmentAdmin(admin.ModelAdmin):
+class SavedAssessmentAdmin(ImportExportModelAdmin):
     """
     Admin interface for saved assessments
     """
@@ -354,7 +355,7 @@ class SavedAssessmentAdmin(admin.ModelAdmin):
 
 
 @admin.register(AuditLog)
-class AuditLogAdmin(admin.ModelAdmin):
+class AuditLogAdmin(ImportExportModelAdmin):
     """
     Admin interface for audit logs
     """
@@ -442,7 +443,7 @@ class AuditLogAdmin(admin.ModelAdmin):
 
 
 @admin.register(ConflictResolution)
-class ConflictResolutionAdmin(admin.ModelAdmin):
+class ConflictResolutionAdmin(ImportExportModelAdmin):
     """
     Admin interface for conflict resolutions
     """
@@ -532,7 +533,7 @@ class ConflictResolutionAdmin(admin.ModelAdmin):
 
 
 @admin.register(ScoringContext)
-class ScoringContextAdmin(admin.ModelAdmin):
+class ScoringContextAdmin(ImportExportModelAdmin):
     """
     Admin interface for scoring contexts
     """

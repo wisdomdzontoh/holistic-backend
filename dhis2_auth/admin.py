@@ -1,11 +1,12 @@
 from django.contrib import admin
 from django.utils.html import format_html
 from django.utils import timezone
+from import_export.admin import ImportExportModelAdmin
 from .models import DHIS2User, DHIS2Session
 
 
 @admin.register(DHIS2User)
-class DHIS2UserAdmin(admin.ModelAdmin):
+class DHIS2UserAdmin(ImportExportModelAdmin):
     """
     Admin interface for DHIS2 users.
     """
@@ -83,7 +84,7 @@ class DHIS2UserAdmin(admin.ModelAdmin):
 
 
 @admin.register(DHIS2Session)
-class DHIS2SessionAdmin(admin.ModelAdmin):
+class DHIS2SessionAdmin(ImportExportModelAdmin):
     """
     Admin interface for DHIS2 sessions.
     """

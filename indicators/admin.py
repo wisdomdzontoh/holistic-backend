@@ -345,7 +345,7 @@ class TrackedIndicatorAdmin(ImportExportModelAdmin):
 
 
 @admin.register(IndicatorCategory)
-class IndicatorCategoryAdmin(admin.ModelAdmin):
+class IndicatorCategoryAdmin(ImportExportModelAdmin):
     """
     Admin interface for indicator categories
     """
@@ -392,7 +392,7 @@ class IndicatorCategoryAdmin(admin.ModelAdmin):
 
 
 @admin.register(IndicatorCategoryMapping)
-class IndicatorCategoryMappingAdmin(admin.ModelAdmin):
+class IndicatorCategoryMappingAdmin(ImportExportModelAdmin):
     """
     Admin interface for indicator category mappings
     """
@@ -430,7 +430,7 @@ class IndicatorCategoryMappingAdmin(admin.ModelAdmin):
 
 
 @admin.register(IndicatorThreshold)
-class IndicatorThresholdAdmin(admin.ModelAdmin):
+class IndicatorThresholdAdmin(ImportExportModelAdmin):
     """
     Admin interface for indicator thresholds
     """

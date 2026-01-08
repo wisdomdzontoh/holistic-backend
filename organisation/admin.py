@@ -1,6 +1,7 @@
 from django.contrib import admin
 from django.utils.html import format_html
 from django.utils import timezone
+from import_export.admin import ImportExportModelAdmin
 from .models import (
     OrgUnitLevel, OrgUnit, UserOrgUnitAccess, OrgUnitSyncLog,
     OrgUnitGroup, OrgUnitGroupMembership
@@ -19,7 +20,7 @@ class OrgUnitInline(admin.TabularInline):
 
 
 @admin.register(OrgUnitLevel)
-class OrgUnitLevelAdmin(admin.ModelAdmin):
+class OrgUnitLevelAdmin(ImportExportModelAdmin):
     """
     Admin interface for org unit levels
     """
@@ -66,7 +67,7 @@ class UserOrgUnitAccessInline(admin.TabularInline):
 
 
 @admin.register(OrgUnit)
-class OrgUnitAdmin(admin.ModelAdmin):
+class OrgUnitAdmin(ImportExportModelAdmin):
     """
     Admin interface for org units
     """
@@ -150,7 +151,7 @@ class OrgUnitAdmin(admin.ModelAdmin):
 
 
 @admin.register(UserOrgUnitAccess)
-class UserOrgUnitAccessAdmin(admin.ModelAdmin):
+class UserOrgUnitAccessAdmin(ImportExportModelAdmin):
     """
     Admin interface for user org unit access
     """
@@ -235,7 +236,7 @@ class UserOrgUnitAccessAdmin(admin.ModelAdmin):
 
 
 @admin.register(OrgUnitSyncLog)
-class OrgUnitSyncLogAdmin(admin.ModelAdmin):
+class OrgUnitSyncLogAdmin(ImportExportModelAdmin):
     """
     Admin interface for org unit sync logs
     """
@@ -324,7 +325,7 @@ class OrgUnitGroupMembershipInline(admin.TabularInline):
 
 
 @admin.register(OrgUnitGroup)
-class OrgUnitGroupAdmin(admin.ModelAdmin):
+class OrgUnitGroupAdmin(ImportExportModelAdmin):
     """
     Admin interface for org unit groups
     """
@@ -377,7 +378,7 @@ class OrgUnitGroupAdmin(admin.ModelAdmin):
 
 
 @admin.register(OrgUnitGroupMembership)
-class OrgUnitGroupMembershipAdmin(admin.ModelAdmin):
+class OrgUnitGroupMembershipAdmin(ImportExportModelAdmin):
     """
     Admin interface for org unit group memberships
     """
