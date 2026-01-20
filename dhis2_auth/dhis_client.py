@@ -31,11 +31,21 @@ class DHIS2Client:
         self.password = password
         
         # Create session with proper headers and configuration
+        # Use browser-like headers to bypass Cloudflare protection
         self.session = requests.Session()
         self.session.headers.update({
-            'User-Agent': 'HolisticAssessment/1.0',
-            'Accept': 'application/json',
-            'Content-Type': 'application/json'
+            # Use a realistic browser User-Agent to bypass Cloudflare bot detection
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+            'Accept': 'application/json, text/plain, */*',
+            'Accept-Language': 'en-US,en;q=0.9',
+            'Accept-Encoding': 'gzip, deflate, br',
+            'Content-Type': 'application/json',
+            'Connection': 'keep-alive',
+            'Sec-Fetch-Dest': 'empty',
+            'Sec-Fetch-Mode': 'cors',
+            'Sec-Fetch-Site': 'cross-site',
+            'Referer': instance_url.rstrip('/') + '/',
+            'Origin': instance_url.rstrip('/')
         })
         
         # Configure session
@@ -773,6 +783,26 @@ class DHIS2Client:
             # Log request details for debugging
             logger.debug(f"Response status: {response.status_code}")
             
+            # Check for Cloudflare challenge page first (can return 200 with HTML)
+            content_type = response.headers.get('Content-Type', '').lower()
+            is_html_response = (
+                'text/html' in content_type or
+                response.text.strip().startswith('<!DOCTYPE html>') or
+                '<html' in response.text.lower() or
+                'cloudflare' in response.text.lower() or
+                'Just a moment' in response.text
+            )
+            
+            if is_html_response and response.status_code == 200:
+                logger.error(f"Cloudflare challenge detected for {method} {url}")
+                logger.error(f"Response headers: {dict(response.headers)}")
+                logger.error(f"Response content (first 500 chars): {response.text[:500]}")
+                raise requests.RequestException(
+                    "Cloudflare protection is blocking the request. "
+                    "The DHIS2 instance appears to be behind Cloudflare protection. "
+                    "Please contact the DHIS2 administrator to whitelist your server IP address."
+                )
+            
             # Handle different status codes
             if response.status_code == 204:
                 return {}
@@ -803,10 +833,18 @@ class DHIS2Client:
                 logger.error(f"Response headers: {dict(response.headers)}")
                 logger.error(f"Response content (first 500 chars): {response.text[:500]}")
                 
-                # Check if response is HTML (login page)
-                if response.text.strip().startswith('<!DOCTYPE html>') or '<html' in response.text.lower():
-                    logger.error("DHIS2 returned HTML instead of JSON - authentication may have failed")
-                    raise requests.RequestException("Authentication failed - DHIS2 returned login page instead of JSON")
+                # Check if response is HTML (login page or Cloudflare challenge)
+                if is_html_response:
+                    if 'cloudflare' in response.text.lower() or 'Just a moment' in response.text:
+                        logger.error("Cloudflare challenge detected in response")
+                        raise requests.RequestException(
+                            "Cloudflare protection is blocking the request. "
+                            "The DHIS2 instance appears to be behind Cloudflare protection. "
+                            "Please contact the DHIS2 administrator to whitelist your server IP address."
+                        )
+                    else:
+                        logger.error("DHIS2 returned HTML instead of JSON - authentication may have failed")
+                        raise requests.RequestException("Authentication failed - DHIS2 returned HTML page instead of JSON")
                 
                 raise requests.RequestException(f"Invalid JSON response: {str(e)}")
             

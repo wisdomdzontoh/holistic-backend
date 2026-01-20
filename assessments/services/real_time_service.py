@@ -349,6 +349,21 @@ class RealTimeDHIS2Service:
                             self._session = aiohttp.ClientSession()
                             
                             # Set auth headers if available
+                            # Use browser-like headers to bypass Cloudflare protection
+                            browser_headers = {
+                                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                                'Accept': 'application/json, text/plain, */*',
+                                'Accept-Language': 'en-US,en;q=0.9',
+                                'Accept-Encoding': 'gzip, deflate, br',
+                                'Content-Type': 'application/json',
+                                'Connection': 'keep-alive',
+                                'Sec-Fetch-Dest': 'empty',
+                                'Sec-Fetch-Mode': 'cors',
+                                'Sec-Fetch-Site': 'cross-site',
+                                'Referer': instance_url.rstrip('/') + '/',
+                                'Origin': instance_url.rstrip('/')
+                            }
+                            
                             if self._dhis2_client.username and self._dhis2_client.password:
                                 import base64
                                 auth_string = f"{self._dhis2_client.username}:{self._dhis2_client.password}"
@@ -356,18 +371,12 @@ class RealTimeDHIS2Service:
                                 auth_b64 = base64.b64encode(auth_bytes).decode('ascii')
                                 
                                 self._auth_headers = {
+                                    **browser_headers,
                                     'Authorization': f'Basic {auth_b64}',
-                                    'User-Agent': 'HolisticAssessment/1.0',
-                                    'Accept': 'application/json',
-                                    'Content-Type': 'application/json'
                                 }
                             else:
                                 # Use cookies if available
-                                self._auth_headers = {
-                                    'User-Agent': 'HolisticAssessment/1.0',
-                                    'Accept': 'application/json',
-                                    'Content-Type': 'application/json'
-                                }
+                                self._auth_headers = browser_headers.copy()
                                 
                                 # Add cookies if available in session data
                                 if 'dhis2_cookies' in session_data:
@@ -384,10 +393,17 @@ class RealTimeDHIS2Service:
             
             # Fallback: create session without authentication
             self._session = aiohttp.ClientSession()
+            # Use browser-like headers to bypass Cloudflare protection
             self._auth_headers = {
-                'User-Agent': 'HolisticAssessment/1.0',
-                'Accept': 'application/json',
-                'Content-Type': 'application/json'
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+                'Accept': 'application/json, text/plain, */*',
+                'Accept-Language': 'en-US,en;q=0.9',
+                'Accept-Encoding': 'gzip, deflate, br',
+                'Content-Type': 'application/json',
+                'Connection': 'keep-alive',
+                'Sec-Fetch-Dest': 'empty',
+                'Sec-Fetch-Mode': 'cors',
+                'Sec-Fetch-Site': 'cross-site',
             }
             self._session_created = timezone.now()
             self.logger.warning("Created DHIS2 session without authentication")
