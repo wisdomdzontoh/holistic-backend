@@ -145,41 +145,7 @@ class LoginView(APIView):
             
         except requests.RequestException as e:
             logger.error(f"Login failed for user {username} from {instance_url}: {str(e)}")
-            
-            # Check if this is a Cloudflare challenge error
-            error_message = str(e)
-            if 'Cloudflare protection' in error_message or 'cloudflare' in error_message.lower():
-                return Response(
-                    {
-                        'success': False,
-                        'message': (
-                            'Cloudflare protection is blocking the request. '
-                            'The DHIS2 instance appears to be behind Cloudflare protection. '
-                            'Please contact the DHIS2 administrator to whitelist your server IP address, '
-                            'or try accessing the DHIS2 instance from a different network.'
-                        )
-                    },
-                    status=status.HTTP_502_BAD_GATEWAY
-                )
-            
             if hasattr(e, 'response') and e.response:
-                # Check for Cloudflare challenge in response
-                response_text = e.response.text if hasattr(e.response, 'text') else ''
-                if ('cloudflare' in response_text.lower() or 
-                    'Just a moment' in response_text or
-                    response_text.strip().startswith('<!DOCTYPE html>')):
-                    return Response(
-                        {
-                            'success': False,
-                            'message': (
-                                'Cloudflare protection is blocking the request. '
-                                'The DHIS2 instance appears to be behind Cloudflare protection. '
-                                'Please contact the DHIS2 administrator to whitelist your server IP address.'
-                            )
-                        },
-                        status=status.HTTP_502_BAD_GATEWAY
-                    )
-                
                 if e.response.status_code == 401:
                     return Response(
                         {
