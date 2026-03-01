@@ -41,10 +41,10 @@ DEBUG = os.getenv('DEBUG', 'True').lower() == 'true'
 ALLOWED_HOSTS = os.getenv('ALLOWED_HOSTS', 'localhost,127.0.0.1,0.0.0.0,holistic-backend-y7gp.onrender.com').split(',')
 
 # Ensure the Render domain is always included for production
-if not DEBUG:
-    render_domain = 'holistic-backend-y7gp.onrender.com'
-    if render_domain not in ALLOWED_HOSTS:
-        ALLOWED_HOSTS.append(render_domain)
+# if not DEBUG:
+#     render_domain = 'holistic-backend-y7gp.onrender.com'
+#     if render_domain not in ALLOWED_HOSTS:
+#         ALLOWED_HOSTS.append(render_domain)
 
 
 # Application definition
@@ -62,7 +62,8 @@ INSTALLED_APPS = [
     'corsheaders',
     'import_export',
     
-    # Local Apps
+    # Local Apps (config = project package, for management commands)
+    'config',
     'assessments',
     'configurations',
     'core',
