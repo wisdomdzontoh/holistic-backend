@@ -20,6 +20,11 @@ import environ
 load_dotenv()
 
 
+def _split_env_list(name: str, default: str = ""):
+    value = os.getenv(name, default)
+    return [item.strip() for item in value.split(",") if item and item.strip()]
+
+
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
@@ -38,7 +43,10 @@ SECRET_KEY = os.getenv('SECRET_KEY')
 DEBUG = os.getenv('DEBUG', 'True').lower() == 'true'
 
 # ALLOWED_HOSTS configuration
-ALLOWED_HOSTS = os.getenv('ALLOWED_HOSTS', 'localhost,127.0.0.1,0.0.0.0,holistic-backend-y7gp.onrender.com').split(',')
+ALLOWED_HOSTS = _split_env_list(
+    'ALLOWED_HOSTS',
+    'localhost,127.0.0.1,0.0.0.0,holistic-backend-y7gp.onrender.com,holistic-backend-update.onrender.com'
+)
 
 # Ensure the Render domain is always included for production
 # if not DEBUG:
@@ -159,25 +167,23 @@ if os.getenv('DATABASE_URL'):
         print("Falling back to SQLite database")
 
 
-#CORS Settings
+# CORS Settings
 CORS_ALLOW_ALL_ORIGINS = bool(DEBUG)
 CORS_ALLOW_CREDENTIALS = True
-CORS_ALLOWED_ORIGINS = [
-    "http://localhost:3000",
-    "http://localhost:3003",
-    "http://127.0.0.1:3000",
-    "http://127.0.0.1:3003",
-    "https://holistic-assessment.vercel.app",
-    "https://holistic-assessment-frontend.vercel.app",  # Add your actual frontend domain
-    "https://holistic-backend-y7gp.onrender.com"
-]
-
-# Additional CORS settings for production
-CORS_ALLOWED_ORIGINS = [
-    "https://holistic-assessment.vercel.app",
-    "https://holistic-assessment-frontend.vercel.app",  # Add your actual frontend domain
-    "https://holistic-backend-y7gp.onrender.com"
-]
+CORS_ALLOWED_ORIGINS = _split_env_list(
+    'CORS_ALLOWED_ORIGINS',
+    (
+        "http://localhost:3000,"
+        "http://localhost:3003,"
+        "http://127.0.0.1:3000,"
+        "http://127.0.0.1:3003,"
+        "https://holistic-assessment.vercel.app,"
+        "https://holistic-assessment-frontend.vercel.app,"
+        "https://holistic-generator.leadsranc.com,"
+        "https://holistic-backend-y7gp.onrender.com,"
+        "https://holistic-backend-update.onrender.com"
+    )
+)
 
 # Additional CORS settings for cookie handling
 # Additional CORS settings for cookie handling
@@ -198,6 +204,17 @@ CORS_EXPOSE_HEADERS = [
     'access-control-allow-credentials',
 ]
 CORS_ALLOW_CREDENTIALS = True
+
+CSRF_TRUSTED_ORIGINS = _split_env_list(
+    'CSRF_TRUSTED_ORIGINS',
+    (
+        "https://holistic-assessment.vercel.app,"
+        "https://holistic-assessment-frontend.vercel.app,"
+        "https://holistic-generator.leadsranc.com,"
+        "https://holistic-backend-y7gp.onrender.com,"
+        "https://holistic-backend-update.onrender.com"
+    )
+)
 
 
 #DRF Settings
