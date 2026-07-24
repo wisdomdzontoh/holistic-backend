@@ -67,7 +67,7 @@ class ExportService:
                 export_type=export_request['export_type'],
                 export_parameters=export_request.get('export_parameters', {}),
                 priority=export_request.get('priority', ExportJob.ExportPriority.NORMAL),
-                created_by=user,
+                created_by_id=user.id,
                 org_unit_scope=org_unit_scope,
                 expires_at=expires_at
             )

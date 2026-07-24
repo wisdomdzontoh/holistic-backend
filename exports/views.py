@@ -49,10 +49,14 @@ class ExportTemplateViewSet(viewsets.ModelViewSet):
             Q(is_system_template=True) | Q(is_public=True)
         )
         
-        # Also show user's own templates
+        # Also show user's own templates. Filter by created_by_id (a plain PK
+        # comparison) rather than created_by=self.request.user - under this app's
+        # custom DHIS2SessionAuthentication, request.user is a DHIS2UserWrapper,
+        # not a real DHIS2User model instance, so the ORM can't resolve it for a
+        # direct FK comparison (raises TypeError: Field 'id' expected a number).
         if hasattr(self.request.user, 'dhis2_username'):
             queryset = queryset | ExportTemplate.objects.filter(
-                created_by=self.request.user
+                created_by_id=self.request.user.id
             )
         
         return queryset.distinct()
@@ -76,7 +80,7 @@ class ExportTemplateViewSet(viewsets.ModelViewSet):
                         is_active=template.is_active,
                         is_system_template=False,
                         is_public=serializer.validated_data.get('is_public', True),
-                        created_by=request.user
+                        created_by_id=request.user.id
                     )
                     
                     return Response({
@@ -131,10 +135,11 @@ class ExportJobViewSet(viewsets.ModelViewSet):
         """Filter jobs based on user access"""
         queryset = super().get_queryset()
         
-        # Show user's own jobs
+        # Show user's own jobs. See ExportTemplateViewSet.get_queryset for why
+        # this uses created_by_id rather than created_by=self.request.user.
         if hasattr(self.request.user, 'dhis2_username'):
-            queryset = queryset.filter(created_by=self.request.user)
-        
+            queryset = queryset.filter(created_by_id=self.request.user.id)
+
         return queryset
     
     @action(detail=False, methods=['post'])
@@ -276,7 +281,7 @@ class ExportJobViewSet(viewsets.ModelViewSet):
     def analytics(self, request):
         """Get export analytics"""
         # Get user's jobs
-        user_jobs = ExportJob.objects.filter(created_by=request.user)
+        user_jobs = ExportJob.objects.filter(created_by_id=request.user.id)
         
         # Calculate analytics
         total_jobs = user_jobs.count()
@@ -362,8 +367,8 @@ class ExportScheduleViewSet(viewsets.ModelViewSet):
         
         # Show user's own schedules
         if hasattr(self.request.user, 'dhis2_username'):
-            queryset = queryset.filter(created_by=self.request.user)
-        
+            queryset = queryset.filter(created_by_id=self.request.user.id)
+
         return queryset
     
     @action(detail=True, methods=['post'])
@@ -403,7 +408,7 @@ class ExportScheduleViewSet(viewsets.ModelViewSet):
                 
                 schedules = ExportSchedule.objects.filter(
                     id__in=schedule_ids,
-                    created_by=request.user
+                    created_by_id=request.user.id
                 )
                 
                 schedules.update(status=new_status)
@@ -437,10 +442,11 @@ class ExportLogViewSet(viewsets.ReadOnlyModelViewSet):
         """Filter logs based on user access"""
         queryset = super().get_queryset()
         
-        # Show logs for user's own jobs
+        # Show logs for user's own jobs. See ExportTemplateViewSet.get_queryset
+        # for why this uses created_by_id rather than created_by=self.request.user.
         if hasattr(self.request.user, 'dhis2_username'):
-            queryset = queryset.filter(export_job__created_by=self.request.user)
-        
+            queryset = queryset.filter(export_job__created_by_id=self.request.user.id)
+
         return queryset
 
 

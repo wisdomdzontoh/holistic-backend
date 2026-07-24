@@ -28,7 +28,11 @@ class RealTimeDHIS2Service:
     Service for real-time DHIS2 data fetching without database storage
     Uses the same synchronous approach as the working old_services.py
     """
-    
+
+    # Batched DHIS2 analytics responses are cached briefly so a re-export minutes
+    # later (common during a working session) doesn't re-hit DHIS2 at all.
+    DHIS2_BATCH_CACHE_TIMEOUT = 60 * 10  # 10 minutes
+
     def __init__(self, dhis2_client=None):
         self.client = dhis2_client
         self.logger = logging.getLogger(__name__)
@@ -36,781 +40,6 @@ class RealTimeDHIS2Service:
         self.cache_service = CacheService()
         self.data_processor = DataProcessingService()
         self.period_service = PeriodService()
-    
-    def fetch_holistic_assessment_data(self, request, assessment_config):
-        """
-        Fetch real-time DHIS2 data for holistic assessment display
-        No database storage - just fetch and return for immediate display
-        Uses the same approach as the working old_services.py
-        """
-        try:
-            # Get DHIS2 user from session
-            from dhis2_auth.session import get_dhis2_user_from_request
-            dhis2_user = get_dhis2_user_from_request(request)
-            if not dhis2_user:
-                raise ValueError("No DHIS2 user found in session")
-            
-            # Initialize client if not provided
-            if not self.client:
-                self.client = DHIS2ClientFactory.create_client_from_session(
-                    dhis2_user.dhis2_instance_url,
-                    request.session.session_key
-                )
-            
-            # Extract configuration
-            org_unit_ids = assessment_config.get('org_unit_ids', [])
-            org_unit_names = assessment_config.get('org_unit_names', [])
-            periods_raw = assessment_config.get('periods', [])
-            indicator_uids = assessment_config.get('indicator_uids', [])
-            manual_entries = assessment_config.get('manual_entries', {})
-            pre_calculated_scores = assessment_config.get('pre_calculated_scores', {})
-            self.logger.info(f"Org unit names received: {org_unit_names}")
-            
-            # Handle periods - they can be strings or objects with 'code' field
-            periods = []
-            for period in periods_raw:
-                if isinstance(period, dict) and 'code' in period:
-                    periods.append(period['code'])
-                elif isinstance(period, str):
-                    periods.append(period)
-                else:
-                    # Fallback: try to extract code from period object
-                    period_code = getattr(period, 'code', str(period))
-                    periods.append(period_code)
-            
-            # Sort periods chronologically to ensure correct change calculation
-            periods.sort()
-            
-            if not org_unit_ids or not periods:
-                raise ValueError("Organization units and periods are required")
-            
-            # Fetch active indicators if not specified
-            if not indicator_uids:
-                indicators = TrackedIndicator.objects.filter(is_active=True)
-                indicator_uids = [ind.dhis2_uid for ind in indicators if ind.dhis2_uid]
-            
-            # Fetch data for each indicator
-            assessment_data = {
-                'indicators': [],
-                'objectives': [],
-                'milestones': [],
-                'metadata': {
-                    'org_units': org_unit_ids,
-                    'periods': periods,
-                    'fetched_at': timezone.now().isoformat()
-                }
-            }
-            
-            # Group indicators by objective
-            from configurations.models import Objective
-            objectives = Objective.objects.filter(is_active=True).prefetch_related('indicator_weights__indicator')
-            
-            # Check if we have indicator weights configured
-            total_weights = sum(obj.indicator_weights.count() for obj in objectives)
-            
-            if total_weights == 0:
-                # No indicator weights configured - fetch indicators directly and group them evenly
-                all_indicators = list(TrackedIndicator.objects.filter(
-                    dhis2_uid__in=indicator_uids,
-                    is_active=True
-                ))
-                
-                # Distribute indicators evenly across objectives
-                indicators_per_objective = len(all_indicators) // max(len(objectives), 1)
-                indicator_list = list(all_indicators)
-                
-                for i, objective in enumerate(objectives):
-                    objective_data = {
-                        'id': objective.id,
-                        'name': objective.name,
-                        'code': objective.code,
-                        'color': objective.color,
-                        'milestone': None,
-                        'indicators': []
-                    }
-                    
-                    # Assign indicators to this objective
-                    start_idx = i * indicators_per_objective
-                    end_idx = start_idx + indicators_per_objective if i < len(objectives) - 1 else len(indicator_list)
-                    objective_indicators = indicator_list[start_idx:end_idx]
-                    
-                    for indicator in objective_indicators:
-                        indicator_data = {
-                            'id': indicator.id,
-                            'name': indicator.name,
-                            'dhis2_uid': indicator.dhis2_uid,
-                            'description': indicator.description,
-                            'indicator_number': indicator.indicator_number or f"{i+1}",
-                            'display_order': indicator.display_order,
-                            'target_value': float(indicator.target_value) if indicator.target_value else None,
-                            'target_display': indicator.target_display,
-                            'target_lower_limit': float(indicator.target_lower_limit) if indicator.target_lower_limit else None,
-                            'target_upper_limit': float(indicator.target_upper_limit) if indicator.target_upper_limit else None,
-                            'target_format': getattr(indicator, 'target_format', 'SINGLE'),
-                            'target_type': indicator.target_type,
-                            'weight': 1.0,  # Default weight when no indicator weights configured
-                            'data_values': {},
-                            'score': None
-                        }
-                        
-                        # Fetch data for each period
-                        for period_code in periods:
-                            try:
-                                if indicator.dhis2_uid:
-                                    value = self._fetch_single_indicator_data(
-                                        indicator, org_unit_ids[0], period_code
-                                    )
-                                    clean_value = self._clean_numeric_value(value)
-                                    # For DHIS2 data, if no value is found, assign 0 to help with scoring
-                                    final_value = clean_value if clean_value is not None else 0
-                                    indicator_data['data_values'][period_code] = {
-                                        'value': final_value,
-                                        'dhis2_value': clean_value,  # Keep original for reference
-                                        'manual_override': None
-                                    }
-                                else:
-                                    # Manual indicator – initialize empty value, editable on FE
-                                    indicator_data['data_values'][period_code] = {
-                                        'value': None,
-                                        'dhis2_value': None,
-                                        'manual_override': None
-                                    }
-                            except Exception as e:
-                                self.logger.warning(f"Failed to process {indicator.name} for period {period_code}: {str(e)}")
-                                indicator_data['data_values'][period_code] = {
-                                    'value': None,
-                                    'dhis2_value': None,
-                                    'manual_override': None
-                                }
-                        
-                        # Apply manual entries if available for this indicator
-                        if manual_entries and str(indicator.id) in manual_entries:
-                            indicator_manual_entries = manual_entries[str(indicator.id)]
-                            logger.info(f"Applying manual entries for indicator {indicator.id}: {indicator_manual_entries}")
-                            
-                            for period_code, manual_value in indicator_manual_entries.items():
-                                if period_code in indicator_data['data_values']:
-                                    # Apply manual override - this is the key fix
-                                    indicator_data['data_values'][period_code]['value'] = manual_value
-                                    indicator_data['data_values'][period_code]['manual_override'] = manual_value
-                                    logger.info(f"Applied manual value {manual_value} for indicator {indicator.id} period {period_code}")
-                        
-                        # Compute percent_change and target_gap for latest vs previous period
-                        try:
-                            if isinstance(periods, list) and len(periods) >= 1:
-                                last_key = periods[-1]  # This is now a period code
-                                prev_key = periods[-2] if len(periods) > 1 else None
-                                curr_val = indicator_data['data_values'].get(last_key, {}).get('value')
-                                prev_val = indicator_data['data_values'].get(prev_key, {}).get('value') if prev_key else None
-                                
-                                # Calculate percent change and target gap using the same logic as old_services.py
-                                change_pct = None
-                                gap_pct = None
-                                
-                                if prev_val not in (None, 0, 0.0) and curr_val is not None:
-                                    try:
-                                        # For range indicators, always use standard formula regardless of target_type
-                                        if indicator_data.get('target_format') == 'RANGE':
-                                            change = ((float(curr_val) - float(prev_val)) / abs(float(prev_val))) * 100.0
-                                        else:
-                                            # For non-range indicators, use target_type specific formula
-                                            if indicator.target_type == 'decrease':
-                                                # For decrease indicators: (previous_value - current_value) / abs(current_value) * 100
-                                                change = ((float(prev_val) - float(curr_val)) / abs(float(curr_val))) * 100.0
-                                            else:
-                                                # For increase indicators: (current_value - previous_value) / abs(previous_value) * 100
-                                                change = ((float(curr_val) - float(prev_val)) / abs(float(prev_val))) * 100.0
-                                        
-                                        if change == float('inf') or change == float('-inf'):
-                                            change_pct = None
-                                        else:
-                                            change_pct = round(change, 2)
-                                    except Exception:
-                                        change_pct = None
-                                
-                                # Calculate target gap
-                                if curr_val is not None and curr_val != 0:
-                                    try:
-                                        tgt = indicator_data.get('target_value')
-                                        target_format = indicator_data.get('target_format', 'SINGLE')
-                                        target_upper = indicator_data.get('target_upper_limit')
-                                        
-                                        if target_format == 'RANGE' and target_upper is not None:
-                                            # For range indicators: (Target upper limit - Current Value) / Current Value * 100
-                                            gap_calc = ((float(target_upper) - float(curr_val)) / float(curr_val)) * 100.0
-                                        else:
-                                            # For non-range indicators
-                                            if tgt not in (None, 0, 0.0):
-                                                if indicator.target_type == 'increase':
-                                                    # For increase indicators: (Current Value - Target Value) / Target Value * 100
-                                                    gap_calc = ((float(curr_val) - float(tgt)) / float(tgt)) * 100.0
-                                                else:
-                                                    # For decrease indicators: (Target Value - Current Value) / Current Value * 100
-                                                    gap_calc = ((float(tgt) - float(curr_val)) / float(curr_val)) * 100.0
-                                            else:
-                                                gap_calc = None
-                                        
-                                        if gap_calc is not None and gap_calc != float('inf') and gap_calc != float('-inf'):
-                                            gap_pct = round(gap_calc, 2)
-                                        else:
-                                            gap_pct = None
-                                    except Exception:
-                                        gap_pct = None
-                                
-                                # Derive categories and simple threshold flags for M/N
-                                change_cat = self._classify_change_category(change_pct, indicator.target_type)
-                                gap_cat = self._classify_gap_category(gap_pct)
-                                
-                                # Use comprehensive target achievement logic from HolisticScoringService
-                                current_meets = self._check_target_achievement_comprehensive(curr_val, indicator)
-                                previous_meets = self._check_target_achievement_comprehensive(prev_val, indicator)
-                                
-                                has_data = curr_val is not None
-                                trend_score = self._compute_trend_score(has_data, current_meets, previous_meets, change_cat, gap_cat, indicator, curr_val, prev_val)
-                                # Derive a simple indicator score from categories/trend if not provided by DB
-                                derived_score = trend_score
-                                color, label = self._score_color_label(derived_score)
-                                
-                                indicator_data['score'] = {
-                                    'percent_change': change_pct,
-                                    'target_gap': gap_pct,
-                                    'change_category': change_cat,
-                                    'gap_category': gap_cat,
-                                    'trend_score': trend_score,
-                                    'score': derived_score,
-                                    'score_color': color,
-                                    'score_label': label,
-                                    'current_value': curr_val,
-                                    'previous_value': prev_val,
-                                    'is_manual_override': False
-                                }
-                        except Exception as e:
-                            self.logger.warning(f"Failed computing change/gap for indicator {indicator.id}: {e}")
-                        
-                        objective_data['indicators'].append(indicator_data)
-                    
-                    assessment_data['objectives'].append(objective_data)
-            
-            # Return as array to match frontend expectations  
-            return [{
-                'org_unit_id': org_unit_ids[0],
-                'org_unit_name': self._get_org_unit_name(org_unit_ids[0]),
-                'assessment_period': {
-                    'id': 1,
-                    'name': f"{periods[0]} to {periods[-1]}" if len(periods) > 1 else periods[0],
-                    'start_date': periods[0],
-                    'end_date': periods[-1]
-                },
-                'objectives': assessment_data['objectives']
-            }]
-            
-        except Exception as e:
-            self.logger.error(f"Error fetching holistic assessment data: {str(e)}")
-            raise
-    
-    async def _ensure_session(self, request=None) -> None:
-        """Ensure we have a valid DHIS2 session."""
-        try:
-            current_time = timezone.now()
-            
-            # Check if we need to create a new session
-            if (self._session is None or 
-                self._session_created is None or
-                (current_time - self._session_created).seconds > 3600):  # 1 hour timeout
-                
-                await self._create_session(request)
-                
-        except Exception as e:
-            self.logger.error(f"Error ensuring session: {str(e)}")
-            raise
-    
-    async def _create_session(self, request=None) -> None:
-        """Create a new DHIS2 session using session-based authentication."""
-        try:
-            # Close existing session if any
-            if self._session:
-                await self._session.close()
-            
-            # Get DHIS2 client from session using sync_to_async
-            if request and hasattr(request, 'session'):
-                session_key = request.session.session_key
-                if session_key:
-                    # Get session data using sync_to_async
-                    session_data = await sync_to_async(get_dhis2_session_data)(session_key)
-                    if session_data:
-                        instance_url = session_data.get('instance_url')
-                        if instance_url:
-                            # Create DHIS2 client using session with sync_to_async
-                            self._dhis2_client = await sync_to_async(
-                                DHIS2ClientFactory.create_client_from_session
-                            )(instance_url, session_key)
-                            
-                            # Create aiohttp session with auth from DHIS2 client
-                            self._session = aiohttp.ClientSession()
-                            
-                            # Set auth headers if available
-                            if self._dhis2_client.username and self._dhis2_client.password:
-                                import base64
-                                auth_string = f"{self._dhis2_client.username}:{self._dhis2_client.password}"
-                                auth_bytes = auth_string.encode('ascii')
-                                auth_b64 = base64.b64encode(auth_bytes).decode('ascii')
-                                
-                                self._auth_headers = {
-                                    'Authorization': f'Basic {auth_b64}',
-                                    'User-Agent': 'HolisticAssessment/1.0',
-                                    'Accept': 'application/json',
-                                    'Content-Type': 'application/json'
-                                }
-                            else:
-                                # Use cookies if available
-                                self._auth_headers = {
-                                    'User-Agent': 'HolisticAssessment/1.0',
-                                    'Accept': 'application/json',
-                                    'Content-Type': 'application/json'
-                                }
-                                
-                                # Add cookies if available in session data
-                                if 'dhis2_cookies' in session_data:
-                                    cookie_string = '; '.join([
-                                        f"{name}={value}" for name, value in session_data['dhis2_cookies'].items()
-                                    ])
-                                    if cookie_string:
-                                        self._auth_headers['Cookie'] = cookie_string
-                            
-                            # Set session creation time
-                            self._session_created = timezone.now()
-                            self.logger.info("DHIS2 session created successfully using session-based auth")
-                            return
-            
-            # Fallback: create session without authentication
-            self._session = aiohttp.ClientSession()
-            self._auth_headers = {
-                'User-Agent': 'HolisticAssessment/1.0',
-                'Accept': 'application/json',
-                'Content-Type': 'application/json'
-            }
-            self._session_created = timezone.now()
-            self.logger.warning("Created DHIS2 session without authentication")
-            
-        except Exception as e:
-            self.logger.error(f"Error creating session: {str(e)}")
-            raise
-    
-    async def _get_tracked_indicators(self) -> List[Dict[str, Any]]:
-        """Get list of tracked indicators from database."""
-        try:
-            # Use sync_to_async to call Django ORM
-            indicators_queryset = await sync_to_async(
-                TrackedIndicator.objects.filter(is_active=True, dhis2_uid__isnull=False).exclude(dhis2_uid='').values
-            )(
-                'dhis2_uid', 'name', 'description', 'numerator', 'denominator',
-                'target_value', 'indicator_type', 'indicator_number'
-            )
-            
-            # Convert queryset to list using sync_to_async
-            indicators = await sync_to_async(list)(indicators_queryset)
-            
-            # Filter out any indicators with None or empty dhis2_uid (just in case)
-            indicators = [ind for ind in indicators if ind.get('dhis2_uid')]
-            
-            return indicators
-            
-        except Exception as e:
-            self.logger.error(f"Error getting tracked indicators: {str(e)}")
-            raise
-    
-    async def _fetch_assessment_data(self, org_unit_id: str, period: str, 
-                                   indicators: List[Dict[str, Any]]) -> Dict[str, Any]:
-        """
-        Fetch assessment data for all indicators.
-        
-        Args:
-            org_unit_id: Organization unit ID
-            period: Assessment period
-            indicators: List of indicators to fetch data for
-            
-        Returns:
-            Complete assessment data
-        """
-        try:
-            # Process period for DHIS2
-            dhis2_periods = self.period_service.convert_to_dhis2_period(period)
-            if dhis2_periods:
-                dhis2_periods = [dhis2_periods]  # Convert to list for consistency
-            else:
-                dhis2_periods = [period]  # Fallback to original period
-            
-            # Fetch data for each indicator
-            indicator_data = []
-            total_score = 0
-            total_weight = 0
-            
-            for indicator in indicators:
-                try:
-                    data = await self._fetch_indicator_data(
-                        indicator, org_unit_id, dhis2_periods
-                    )
-                    
-                    if data:
-                        # Calculate score
-                        score = self._calculate_indicator_score(data)
-                        weighted_score = score * indicator.get('weight', 1)
-                        
-                        data['score'] = score
-                        data['weighted_score'] = weighted_score
-                        data['weight'] = indicator.get('weight', 1)
-                        data['category'] = indicator.get('category', 'Unknown')
-                        
-                        total_score += weighted_score
-                        total_weight += indicator.get('weight', 1)
-                        
-                        indicator_data.append(data)
-                    
-                except Exception as e:
-                    self.logger.warning(f"Error fetching data for indicator {indicator['dhis2_uid']}: {str(e)}")
-                    # Add indicator with no data
-                    indicator_data.append({
-                        'uid': indicator['dhis2_uid'],
-                        'name': indicator['name'],
-                        'current_value': None,
-                        'previous_value': None,
-                        'target_value': indicator.get('target_value'),
-                        'score': 0,
-                        'weighted_score': 0,
-                        'weight': indicator.get('weight', 1),
-                        'category': indicator.get('category', 'Unknown'),
-                        'percentage_change': 0,
-                        'target_gap': 0
-                    })
-            
-            # Calculate overall score
-            overall_score = (total_score / total_weight * 100) if total_weight > 0 else 0
-            
-            return {
-                'org_unit_id': org_unit_id,
-                'org_unit_name': await self._get_org_unit_name(org_unit_id),
-                'period': period,
-                'indicators': indicator_data,
-                'total_score': round(overall_score, 2),
-                'total_indicators': len(indicators),
-                'completed_indicators': len([i for i in indicator_data if i.get('current_value') is not None]),
-                'generated_at': timezone.now().isoformat(),
-                'data_source': 'DHIS2 Real-time'
-            }
-            
-        except Exception as e:
-            self.logger.error(f"Error fetching assessment data: {str(e)}")
-            raise
-    
-    async def _fetch_indicator_data(self, indicator: Dict[str, Any], 
-                                  org_unit_id: str, periods: List[str]) -> Optional[Dict[str, Any]]:
-        """
-        Fetch data for a single indicator.
-        
-        Args:
-            indicator: Indicator configuration
-            org_unit_id: Organization unit ID
-            periods: List of DHIS2 periods
-            
-        Returns:
-            Indicator data with current and previous values
-        """
-        try:
-            current_value = None
-            previous_value = None
-            
-            # Try to fetch current period data
-            if len(periods) > 0:
-                current_value = await self._fetch_indicator_value(
-                    indicator['dhis2_uid'], org_unit_id, periods[0]
-                )
-            
-            # Try to fetch previous period data
-            if len(periods) > 1:
-                previous_value = await self._fetch_indicator_value(
-                    indicator['dhis2_uid'], org_unit_id, periods[1]
-                )
-            
-            if current_value is None and previous_value is None:
-                return None
-            
-            # Calculate derived values
-            percentage_change = self.data_processor.calculate_percentage_change(
-                current_value, previous_value
-            )
-            
-            target_gap = self.data_processor.calculate_target_gap(
-                current_value, indicator.get('target_value')
-            )
-            
-            return {
-                'uid': indicator['dhis2_uid'],
-                'name': indicator['name'],
-                'current_value': current_value,
-                'previous_value': previous_value,
-                'target_value': indicator.get('target_value'),
-                'percentage_change': percentage_change,
-                'target_gap': target_gap
-            }
-            
-        except Exception as e:
-            self.logger.error(f"Error fetching indicator data: {str(e)}")
-            return None
-    
-    async def _fetch_indicator_value(self, indicator_uid: str, org_unit_id: str, 
-                                    period: str) -> Optional[float]:
-        """
-        Fetch a single indicator value from DHIS2.
-        
-        Args:
-            indicator_uid: Indicator UID
-            org_unit_id: Organization unit ID
-            period: DHIS2 period
-            
-        Returns:
-            Indicator value or None if not found
-        """
-        try:
-            # Check if indicator_uid is valid
-            if not indicator_uid or indicator_uid == 'None':
-                self.logger.warning(f"Invalid indicator UID: {indicator_uid}")
-                return None
-            
-            # Try analytics endpoint first
-            value = await self._fetch_from_analytics(indicator_uid, org_unit_id, period)
-            if value is not None:
-                return value
-            
-            # Try dataset endpoint as fallback
-            value = await self._fetch_from_dataset(indicator_uid, org_unit_id, period)
-            return value
-            
-        except Exception as e:
-            self.logger.error(f"Error fetching indicator value: {str(e)}")
-            return None
-    
-    async def _fetch_from_analytics(self, indicator_uid: str, org_unit_id: str, 
-                                   period: str) -> Optional[float]:
-        """Fetch indicator value from DHIS2 analytics endpoint."""
-        try:
-            # Get instance URL from DHIS2 client
-            instance_url = self._dhis2_client.instance_url if self._dhis2_client else getattr(settings, 'DHIS2_URL', '')
-            if not instance_url:
-                self.logger.error("No DHIS2 instance URL available")
-                return None
-                
-            # Use the same approach as the working old_services.py
-            # Make DHIS2 API request based on indicator type
-            # Note: DHIS2 client methods are synchronous, so we need to use sync_to_async
-            
-            self.logger.info(f"Making analytics request for UID: {indicator_uid}")
-            
-            # Try as indicator first (most common)
-            try:
-                response = await sync_to_async(self._dhis2_client.get_analytics_data)(
-                    indicators=[indicator_uid],
-                    periods=[period],
-                    org_units=[org_unit_id]
-                )
-                if response:
-                    self.logger.debug(f"Analytics response for {indicator_uid}: {response}")
-                    return self.data_processor.extract_value_from_analytics_response(response, indicator_uid)
-            except Exception as e:
-                self.logger.debug(f"Failed as indicator, trying as data element: {str(e)}")
-            
-            # Try as data element
-            try:
-                response = await sync_to_async(self._dhis2_client.get_analytics_data)(
-                    data_elements=[indicator_uid],
-                    periods=[period],
-                    org_units=[org_unit_id]
-                )
-                if response:
-                    self.logger.debug(f"Analytics response for {indicator_uid}: {response}")
-                    return self.data_processor.extract_value_from_analytics_response(response, indicator_uid)
-            except Exception as e:
-                self.logger.debug(f"Failed as data element: {str(e)}")
-            
-            # Try as program indicator
-            try:
-                response = await sync_to_async(self._dhis2_client.get_analytics_data)(
-                    program_indicators=[indicator_uid],
-                    periods=[period],
-                    org_units=[org_unit_id]
-                )
-                if response:
-                    self.logger.debug(f"Analytics response for {indicator_uid}: {response}")
-                    return self.data_processor.extract_value_from_analytics_response(response, indicator_uid)
-            except Exception as e:
-                self.logger.debug(f"Failed as program indicator: {str(e)}")
-            
-            if response:
-                self.logger.debug(f"Analytics response for {indicator_uid}: {response}")
-                return self.data_processor.extract_value_from_analytics_response(response, indicator_uid)
-            else:
-                self.logger.warning(f"Empty analytics response for {indicator_uid}")
-            
-            return None
-            
-        except Exception as e:
-            self.logger.error(f"Error fetching from analytics: {str(e)}")
-            return None
-    
-    async def _fetch_from_dataset(self, indicator_uid: str, org_unit_id: str, 
-                                period: str) -> Optional[float]:
-        """Fetch indicator value from DHIS2 dataset endpoint."""
-        try:
-            # Get instance URL from DHIS2 client
-            instance_url = self._dhis2_client.instance_url if self._dhis2_client else getattr(settings, 'DHIS2_URL', '')
-            if not instance_url:
-                self.logger.error("No DHIS2 instance URL available")
-                return None
-                
-            # Use the same approach as the working old_services.py
-            # For dataset requests, use the data set report method
-            self.logger.info(f"Making dataset request for UID: {indicator_uid}")
-            
-            response = await sync_to_async(self._dhis2_client.get_data_set_report)(
-                data_set_id=indicator_uid,
-                periods=[period],
-                org_units=[org_unit_id]
-            )
-            
-            if response:
-                self.logger.debug(f"Dataset response for {indicator_uid}: {response}")
-                return self.data_processor.extract_value_from_dataset_response(response, indicator_uid)
-            else:
-                self.logger.warning(f"Empty dataset response for {indicator_uid}")
-            
-            return None
-            
-        except Exception as e:
-            self.logger.error(f"Error fetching from dataset: {str(e)}")
-            return None
-    
-    def _calculate_indicator_score(self, data: Dict[str, Any]) -> float:
-        """
-        Calculate score for an indicator using the Holistic Assessment algorithm.
-        
-        Args:
-            data: Indicator data with current, previous, and target values
-            
-        Returns:
-            Score between -2 and 2 (Holistic Assessment scale)
-        """
-        try:
-            from .scoring_service import HolisticScoringService
-            from indicators.models import TrackedIndicator
-            
-            # Get indicator details
-            indicator_uid = data.get('uid')
-            current_value = data.get('current_value')
-            previous_value = data.get('previous_value')
-            
-            if not indicator_uid:
-                return 0.0
-            
-            # Get the TrackedIndicator instance
-            try:
-                indicator = TrackedIndicator.objects.get(dhis2_uid=indicator_uid)
-            except TrackedIndicator.DoesNotExist:
-                self.logger.warning(f"Indicator with UID {indicator_uid} not found")
-                return 0.0
-            
-            # Use the HolisticScoringService
-            scoring_service = HolisticScoringService()
-            result = scoring_service.calculate_indicator_score(
-                indicator=indicator,
-                current_value=current_value,
-                previous_value=previous_value,
-                data_provided=current_value is not None
-            )
-            
-            return result['score']
-            
-        except Exception as e:
-            self.logger.error(f"Error calculating indicator score: {str(e)}")
-            return 0.0
-    
-    async def _get_org_unit_name(self, org_unit_id: str) -> str:
-        """Get organization unit name from DHIS2."""
-        try:
-            # Get instance URL from DHIS2 client
-            instance_url = self._dhis2_client.instance_url if self._dhis2_client else getattr(settings, 'DHIS2_URL', '')
-            if not instance_url:
-                self.logger.error("No DHIS2 instance URL available")
-                return org_unit_id
-                
-            url = f"{instance_url}/api/organisationUnits/{org_unit_id}"
-            response = await self._session.get(url, headers=self._auth_headers)
-            
-            if response.status == 200:
-                data = await response.json()
-                return data.get('displayName', org_unit_id)
-            
-            return org_unit_id
-            
-        except Exception as e:
-            self.logger.error(f"Error getting org unit name: {str(e)}")
-            return org_unit_id
-    
-    async def get_indicator_metadata(self, indicator_uid: str) -> Optional[Dict[str, Any]]:
-        """
-        Get metadata for a specific indicator.
-        
-        Args:
-            indicator_uid: Indicator UID
-            
-        Returns:
-            Indicator metadata or None if not found
-        """
-        try:
-            await self._ensure_session()
-            
-            url = f"{self.dhis2_url}/api/indicators/{indicator_uid}"
-            response = await self._session.get(url, headers=self._auth_headers)
-            
-            if response.status == 200:
-                return await response.json()
-            
-            return None
-            
-        except Exception as e:
-            self.logger.error(f"Error getting indicator metadata: {str(e)}")
-            return None
-    
-    async def search_indicators(self, query: str, limit: int = 50) -> List[Dict[str, Any]]:
-        """
-        Search for indicators in DHIS2.
-        
-        Args:
-            query: Search query
-            limit: Maximum number of results
-            
-        Returns:
-            List of matching indicators
-        """
-        try:
-            await self._ensure_session()
-            
-            url = f"{self.dhis2_url}/api/indicators"
-            params = {
-                'query': query,
-                'fields': 'id,displayName,description,numerator,denominator',
-                'paging': 'false'
-            }
-            
-            response = await self._session.get(url, params=params, headers=self._auth_headers)
-            
-            if response.status == 200:
-                data = await response.json()
-                return data.get('indicators', [])[:limit]
-            
-            return []
-            
-        except Exception as e:
-            self.logger.error(f"Error searching indicators: {str(e)}")
-            return []
     
     def _compute_objective_trend_from_indicators(self, indicators: List[Dict[str, Any]]) -> Dict[str, Any]:
         """
@@ -1021,7 +250,19 @@ class RealTimeDHIS2Service:
                 # Only include non-empty UIDs for DHIS2 fetch; keep track of manual ones
                 indicator_uids = [ind.dhis2_uid for ind in indicators if ind.dhis2_uid]
                 manual_indicators = [ind for ind in indicators if not ind.dhis2_uid]
-            
+
+            # Batch-fetch DHIS2 data for every (indicator, period) pair up front in a
+            # handful of HTTP calls instead of one call per pair. The per-pair fetch
+            # loops below still run, but they hit this pre-built lookup first and only
+            # fall back to the slow single-call path for anything not covered here
+            # (reporting-rate indicators, dataSet-type indicators, or a genuine miss).
+            dhis2_indicators_for_batch = list(TrackedIndicator.objects.filter(
+                dhis2_uid__in=indicator_uids, is_active=True
+            ))
+            dhis2_value_lookup = self._fetch_batch_indicator_data(
+                dhis2_indicators_for_batch, org_unit_ids[0], periods
+            )
+
             # Fetch data for each indicator
             assessment_data = {
                 'indicators': [],
@@ -1090,8 +331,8 @@ class RealTimeDHIS2Service:
                         for period_code in periods:
                             try:
                                 if indicator.dhis2_uid:
-                                    value = self._fetch_single_indicator_data(
-                                        indicator, org_unit_ids[0], period_code
+                                    value = self._fetch_indicator_value_for_period(
+                                        indicator, org_unit_ids[0], period_code, dhis2_value_lookup
                                     )
                                     clean_value = self._clean_numeric_value(value)
                                     # For DHIS2 data, if no value is found, assign 0 to help with scoring
@@ -1284,8 +525,8 @@ class RealTimeDHIS2Service:
                         for period in periods:
                             try:
                                 if indicator.dhis2_uid:
-                                    value = self._fetch_single_indicator_data(
-                                        indicator, org_unit_ids[0], period
+                                    value = self._fetch_indicator_value_for_period(
+                                        indicator, org_unit_ids[0], period, dhis2_value_lookup
                                     )
                                     clean_value = self._clean_numeric_value(value)
                                     # For DHIS2 data, if no value is found, assign 0 to help with scoring
@@ -1880,6 +1121,164 @@ class RealTimeDHIS2Service:
         except (ValueError, TypeError) as e:
             self.logger.warning(f"Error cleaning numeric value {value}: {str(e)}")
             return None
+
+    def _fetch_batch_indicator_data(self, indicators, org_unit_id, periods):
+        """
+        Batch-fetch DHIS2 analytics data for many indicators x periods in as few
+        HTTP round trips as possible (grouped by indicator type, chunked to stay
+        under DHIS2 URL/response-size limits), instead of one call per
+        (indicator, period) pair.
+
+        Reporting-rate indicators (dhis2_uid containing '.REPORTING_RATE') and
+        dataSet-type indicators use different endpoints/logic and are deliberately
+        left out of the batch - they, along with any (indicator, period) pair the
+        batch doesn't return a value for, fall back to the existing
+        _fetch_single_indicator_data path (with its full period-format retry logic)
+        via _fetch_indicator_value_for_period.
+
+        Returns a dict keyed by (indicator.dhis2_uid, primary_dhis2_period) -> value.
+        """
+        lookup: Dict[tuple, float] = {}
+        if not indicators or not periods or not self.client:
+            return lookup
+
+        # Short-TTL cache: a re-export minutes later (common during a working
+        # session) reuses this instead of re-hitting DHIS2. Cache key covers the
+        # exact indicator set + org unit + periods requested.
+        cache_key = self.cache_service.generate_cache_key(
+            "dhis2_batch_indicator_data",
+            org_unit_id,
+            sorted(ind.dhis2_uid for ind in indicators if ind.dhis2_uid),
+            sorted(periods),
+        )
+        cached_pairs = self.cache_service.get_assessment_cache(cache_key)
+        if cached_pairs is not None:
+            return {(dx_uid, pe_code): value for dx_uid, pe_code, value in cached_pairs}
+
+        try:
+            # Convert each requested period to its primary DHIS2 format once, up front.
+            converted_periods = set()
+            for period in periods:
+                converted = self._convert_to_dhis2_period(period)
+                if converted:
+                    converted_periods.add(converted)
+
+            if not converted_periods:
+                return lookup
+
+            # Group batchable indicators by type - dataSet indicators use a
+            # different endpoint (get_data_set_report) and stay on the per-call path.
+            groups: Dict[str, List[str]] = {'indicator': [], 'dataElement': [], 'programIndicator': []}
+            for indicator in indicators:
+                uid = indicator.dhis2_uid
+                if not uid or '.REPORTING_RATE' in uid:
+                    continue
+                indicator_type = getattr(indicator, 'indicator_type', 'indicator') or 'indicator'
+                if indicator_type in groups:
+                    groups[indicator_type].append(uid)
+
+            fetch_kwarg_name = {
+                'indicator': 'indicators',
+                'dataElement': 'data_elements',
+                'programIndicator': 'program_indicators',
+            }
+            batch_chunk_size = 50
+
+            for indicator_type, uids in groups.items():
+                if not uids:
+                    continue
+                kwarg_name = fetch_kwarg_name[indicator_type]
+                for i in range(0, len(uids), batch_chunk_size):
+                    chunk = uids[i:i + batch_chunk_size]
+                    try:
+                        response = self.client.get_analytics_data(
+                            periods=list(converted_periods),
+                            org_units=[org_unit_id],
+                            **{kwarg_name: chunk}
+                        )
+                        lookup.update(self._extract_values_from_analytics_response_batch(response))
+                    except Exception as e:
+                        self.logger.warning(
+                            f"Batch DHIS2 analytics fetch failed for {indicator_type} chunk "
+                            f"({len(chunk)} items): {e}. Falling back to individual fetches for these."
+                        )
+                        continue
+
+        except Exception as e:
+            self.logger.error(f"Error batch-fetching DHIS2 indicator data: {str(e)}")
+
+        # Tuple keys aren't JSON-serializable, so cache as a flat list of triples.
+        self.cache_service.set_assessment_cache(
+            cache_key,
+            [[dx_uid, pe_code, value] for (dx_uid, pe_code), value in lookup.items()],
+            timeout=self.DHIS2_BATCH_CACHE_TIMEOUT,
+        )
+
+        return lookup
+
+    def _extract_values_from_analytics_response_batch(self, response):
+        """
+        Parse a DHIS2 /api/analytics response into a {(dx_uid, pe_code): value}
+        lookup covering every row, by reading the dx/pe/value column positions
+        from the response headers. Unlike _extract_value_from_analytics_response
+        (which only ever reads row 0 - correct for a single-indicator/single-period
+        request), this is built for multi-indicator, multi-period batched responses.
+        """
+        lookup = {}
+        try:
+            if not response or not isinstance(response, dict):
+                return lookup
+
+            headers = response.get('headers', [])
+            rows = response.get('rows', [])
+            if not headers or not rows:
+                return lookup
+
+            dx_index = pe_index = value_index = None
+            for i, header in enumerate(headers):
+                name = (header.get('name') or '').lower()
+                if name == 'dx':
+                    dx_index = i
+                elif name == 'pe':
+                    pe_index = i
+                elif name == 'value':
+                    value_index = i
+
+            if dx_index is None or pe_index is None:
+                return lookup
+            if value_index is None:
+                value_index = len(headers) - 1  # DHIS2 analytics always puts value last
+
+            for row in rows:
+                if len(row) <= max(dx_index, pe_index, value_index):
+                    continue
+                raw_value = row[value_index]
+                if raw_value is None or raw_value == '':
+                    continue
+                try:
+                    value = float(raw_value)
+                except (ValueError, TypeError):
+                    continue
+                lookup[(row[dx_index], row[pe_index])] = value
+
+        except Exception as e:
+            self.logger.error(f"Error parsing batched analytics response: {str(e)}")
+
+        return lookup
+
+    def _fetch_indicator_value_for_period(self, indicator, org_unit_id, period, batch_lookup):
+        """
+        Look up a pre-fetched batched value first; fall back to the slower
+        single-indicator/single-period fetch (with its full period-format retry
+        logic) for anything the batch didn't cover.
+        """
+        if batch_lookup:
+            converted_period = self._convert_to_dhis2_period(period)
+            if converted_period:
+                cached = batch_lookup.get((indicator.dhis2_uid, converted_period))
+                if cached is not None:
+                    return cached
+        return self._fetch_single_indicator_data(indicator, org_unit_id, period)
 
     def _fetch_single_indicator_data(self, indicator, org_unit_id, period):
         """

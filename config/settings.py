@@ -15,8 +15,6 @@ from pickle import FALSE
 from dotenv import load_dotenv
 from datetime import timedelta
 
-import environ
-
 load_dotenv()
 
 
@@ -29,9 +27,6 @@ def _split_env_list(name: str, default: str = ""):
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
-env = environ.Env()
-environ.Env.read_env(BASE_DIR / '.env')
-
 # Quick-start development settings - unsuitable for production
 # See https://docs.djangoproject.com/en/5.2/howto/deployment/checklist/
 
@@ -40,7 +35,9 @@ SECRET_KEY = os.getenv('SECRET_KEY')
 
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = os.getenv('DEBUG', 'True').lower() == 'true'
+# Defaults to False so an unset/misconfigured DEBUG env var on Render fails
+# safe into production mode rather than accidentally exposing debug pages.
+DEBUG = os.getenv('DEBUG', 'False').lower() == 'true'
 
 # ALLOWED_HOSTS configuration
 ALLOWED_HOSTS = _split_env_list(

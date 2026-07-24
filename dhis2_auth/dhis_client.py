@@ -467,26 +467,44 @@ class DHIS2Client:
             List of organisation unit dictionaries with nested children
         """
         try:
-            # First, get ALL org units with their parent information to build the complete hierarchy
+            # First, get ALL org units with their parent information to build the complete hierarchy.
+            # Page through the results explicitly instead of relying on a single
+            # pageSize=1000 request, which silently truncates instances with >1000 org units.
             endpoint = "api/organisationUnits"
-            params = {
-                "fields": "id,name,displayName,level,path,code,parent[id,name,displayName]",
-                "paging": "false",
-                "pageSize": 1000
-            }
-            
-            # Don't apply any filters initially - get all units to build the complete hierarchy
-            data = self._make_request("GET", endpoint, params=params)
-            
-            # Handle response structure
-            org_units = []
-            if 'organisationUnits' in data:
-                org_units = data.get('organisationUnits', [])
-            elif isinstance(data, list):
-                org_units = data
-            else:
-                return []
-            
+            org_units: List[Dict[str, Any]] = []
+            page = 1
+            page_size = 1000
+            while True:
+                params = {
+                    "fields": "id,name,displayName,level,path,code,parent[id,name,displayName]",
+                    "paging": "true",
+                    "pageSize": page_size,
+                    "page": page,
+                }
+                data = self._make_request("GET", endpoint, params=params)
+
+                if 'organisationUnits' in data:
+                    page_units = data.get('organisationUnits', [])
+                elif isinstance(data, list):
+                    # Some DHIS2 responses omit the pager wrapper entirely - treat as the final page.
+                    org_units.extend(data)
+                    break
+                else:
+                    break
+
+                org_units.extend(page_units)
+
+                pager = data.get('pager') or {}
+                page_count = pager.get('pageCount')
+                if page_count is not None:
+                    if page >= page_count:
+                        break
+                elif len(page_units) < page_size:
+                    # No pager metadata - fall back to detecting a short page.
+                    break
+
+                page += 1
+
             # Now build the hierarchy manually by organizing units by parent-child relationships
             hierarchy = self._build_hierarchy_from_flat_list(org_units, root_id, max_depth)
             

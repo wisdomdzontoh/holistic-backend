@@ -12,7 +12,7 @@ from typing import Dict, Any, Optional, List
 from django.core.cache import cache
 from django.conf import settings
 from django.utils import timezone
-from datetime import timedelta
+from datetime import date, datetime, timedelta
 
 logger = logging.getLogger(__name__)
 
@@ -41,16 +41,21 @@ class CacheService:
         try:
             if timeout is None:
                 timeout = self.default_timeout
-            
+
             # Serialize data for caching
             serialized_data = self._serialize_data(data)
-            
+            if serialized_data is None:
+                # Serialization failed - skip the write rather than cache a
+                # placeholder that would be trusted as real data on next read.
+                logger.warning(f"Skipping cache write for key {key}: serialization failed")
+                return False
+
             # Set cache with timeout
             cache.set(key, serialized_data, timeout=timeout)
-            
+
             logger.debug(f"Assessment data cached with key: {key}")
             return True
-            
+
         except Exception as e:
             logger.error(f"Error caching assessment data: {str(e)}")
             return False
@@ -148,10 +153,13 @@ class CacheService:
             key = f"org_unit_{org_unit_id}"
             if timeout is None:
                 timeout = self.default_timeout
-            
+
             serialized_data = self._serialize_data(data)
+            if serialized_data is None:
+                logger.warning(f"Skipping cache write for org unit {org_unit_id}: serialization failed")
+                return False
             cache.set(key, serialized_data, timeout=timeout)
-            
+
             logger.debug(f"Organization unit data cached for: {org_unit_id}")
             return True
             
@@ -200,10 +208,13 @@ class CacheService:
             key = f"indicator_{indicator_uid}"
             if timeout is None:
                 timeout = self.default_timeout
-            
+
             serialized_data = self._serialize_data(data)
+            if serialized_data is None:
+                logger.warning(f"Skipping cache write for indicator {indicator_uid}: serialization failed")
+                return False
             cache.set(key, serialized_data, timeout=timeout)
-            
+
             logger.debug(f"Indicator data cached for: {indicator_uid}")
             return True
             
@@ -252,10 +263,13 @@ class CacheService:
             key = f"period_{period}"
             if timeout is None:
                 timeout = self.default_timeout
-            
+
             serialized_data = self._serialize_data(data)
+            if serialized_data is None:
+                logger.warning(f"Skipping cache write for period {period}: serialization failed")
+                return False
             cache.set(key, serialized_data, timeout=timeout)
-            
+
             logger.debug(f"Period data cached for: {period}")
             return True
             
@@ -304,10 +318,13 @@ class CacheService:
             key = f"user_assessments_{user_id}"
             if timeout is None:
                 timeout = self.default_timeout
-            
+
             serialized_data = self._serialize_data(data)
+            if serialized_data is None:
+                logger.warning(f"Skipping cache write for user {user_id} assessments: serialization failed")
+                return False
             cache.set(key, serialized_data, timeout=timeout)
-            
+
             logger.debug(f"User assessments cached for user: {user_id}")
             return True
             
@@ -420,15 +437,18 @@ class CacheService:
             # Fallback to a simple key
             return f"assessment_fallback_{hash(str(args) + str(kwargs))}"
     
-    def _serialize_data(self, data: Any) -> str:
+    def _serialize_data(self, data: Any) -> Optional[str]:
         """
         Serialize data for caching.
-        
+
         Args:
             data: Data to serialize
-            
+
         Returns:
-            Serialized data string
+            Serialized data string, or None if serialization failed. Deliberately
+            does NOT fall back to a placeholder like '{}' - a caller that gets None
+            back must skip writing to the cache rather than store something that
+            looks like valid (but empty) cached data and gets trusted later.
         """
         try:
             # Handle datetime objects
@@ -436,12 +456,12 @@ class CacheService:
                 data = self._convert_datetime_objects(data)
             elif isinstance(data, list):
                 data = [self._convert_datetime_objects(item) if isinstance(item, dict) else item for item in data]
-            
+
             return json.dumps(data, default=str)
-            
+
         except Exception as e:
             logger.error(f"Error serializing data: {str(e)}")
-            return json.dumps({})
+            return None
     
     def _deserialize_data(self, serialized_data: str) -> Any:
         """
@@ -473,7 +493,7 @@ class CacheService:
         if isinstance(obj, dict):
             converted = {}
             for key, value in obj.items():
-                if isinstance(value, (timezone.datetime, timezone.date)):
+                if isinstance(value, (datetime, date)):
                     converted[key] = value.isoformat()
                 elif isinstance(value, dict):
                     converted[key] = self._convert_datetime_objects(value)

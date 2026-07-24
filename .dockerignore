@@ -1,0 +1,30 @@
+# Local environments - never bake secrets or dev artifacts into the image
+venv/
+venv_py314_broken/
+.env
+.env.txt
+env.txt
+
+# Local databases and data dumps
+db.sqlite3
+sqlite_master.sqlite3
+data_export_*.json
+
+# Rebuilt at Docker build time / not needed in the image
+staticfiles/
+media/
+backup/
+
+# VCS / tooling
+.git/
+.gitignore
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Docs - not needed at runtime
+*.md
+docs/
+
+# Tests - run in CI, not baked into the production image
+tests/

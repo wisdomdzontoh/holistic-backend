@@ -35,6 +35,7 @@ from .serializers import (
 # Services will be imported lazily to avoid circular imports
 from dhis2_auth.session import get_dhis2_user, get_dhis2_user_from_request, get_dhis2_session_data
 from dhis2_auth.dhis_client import DHIS2ClientFactory
+from .services.cache_service import CacheService
 from configurations.models import AssessmentPeriod
 from indicators.models import TrackedIndicator
 from configurations.models import Objective
@@ -804,6 +805,10 @@ class AssessmentManagementViewSet(viewsets.ViewSet):
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
 
+    # Org unit hierarchy rarely changes; cache the (slow, external) DHIS2
+    # round-trip instead of hitting DHIS2 on every page load.
+    ORG_UNIT_HIERARCHY_CACHE_TIMEOUT = 60 * 60 * 12  # 12 hours
+
     @action(detail=False, methods=['get'])
     def dhis2_org_units(self, request):
         """
@@ -817,37 +822,50 @@ class AssessmentManagementViewSet(viewsets.ViewSet):
                     {"error": "Incomplete DHIS2 session data"},
                     status=status.HTTP_401_UNAUTHORIZED
                 )
-            
+
             # Get query parameters
             user_only = request.GET.get('user_only', 'false').lower() == 'true'
             include_children = request.GET.get('include_children', 'false').lower() == 'true'
             hierarchy = request.GET.get('hierarchy', 'false').lower() == 'true'
             root_id = request.GET.get('root_id')
             max_depth = int(request.GET.get('max_depth', '3'))
-            
+            force_refresh = request.GET.get('force_refresh', 'false').lower() == 'true'
+
+            instance_url = session_data.get('instance_url')
+
             # Create DHIS2 client
             client = DHIS2ClientFactory.create_client_from_session(
-                session_data.get('instance_url'),
+                instance_url,
                 request.session.session_key
             )
-            
+
             # Get org units from DHIS2 based on parameters
             if hierarchy:
-                # Get hierarchical structure for tree view
-                org_units = client.get_org_unit_hierarchy(root_id, max_depth)
+                cache_service = CacheService()
+                cache_key = cache_service.generate_cache_key(
+                    "dhis2_org_hierarchy", instance_url, root_id or "all", max_depth
+                )
+
+                org_units = None if force_refresh else cache_service.get_assessment_cache(cache_key)
+                if org_units is None:
+                    # Get hierarchical structure for tree view
+                    org_units = client.get_org_unit_hierarchy(root_id, max_depth)
+                    cache_service.set_assessment_cache(
+                        cache_key, org_units, timeout=self.ORG_UNIT_HIERARCHY_CACHE_TIMEOUT
+                    )
             elif user_only:
                 # Get user's accessible org units
                 org_units = client.get_user_accessible_org_units()
             else:
                 # Get all org units with optional children
                 org_units = client.get_org_units(include_children=include_children)
-            
+
             return Response({
                 "success": True,
                 "org_units": org_units,
                 "total": len(org_units)
             })
-            
+
         except Exception as e:
             logger.error(f"Error fetching DHIS2 org units: {str(e)}")
             return Response(
@@ -1531,6 +1549,146 @@ class HolisticAssessmentViewSet(viewsets.ViewSet):
         except Exception as e:
             logger.error(f"Error exporting holistic excel: {e}")
             return Response({'status': 'error', 'message': 'Failed to export Excel'}, status=500)
+
+    @action(detail=False, methods=['post'])
+    def export_excel_async(self, request):
+        """
+        Same export as export_excel, but returns immediately with a job to poll
+        instead of blocking the request for the full fetch+generate duration.
+
+        Runs on a background thread within this process - no Celery/Redis broker
+        or separate worker process needed, since Render's free tier has no free
+        background-worker service to run one on anyway. The export is fast now
+        that DHIS2 fetches are batched (see fetch_holistic_assessment_data), so
+        this is UX polish (a real progress bar) on top of that, not a
+        correctness requirement.
+        """
+        import os
+        import threading
+        import uuid
+        from django.db import close_old_connections
+        from exports.models import ExportJob, ExportTemplate
+        from .services import RealTimeDHIS2Service
+
+        try:
+            serializer = HolisticAssessmentRequestSerializer(data=request.data)
+            serializer.is_valid(raise_exception=True)
+
+            manual_entries = request.data.get('manual_entries', {})
+            pre_calculated_scores = request.data.get('pre_calculated_scores', {})
+            assessment_config = serializer.validated_data
+
+            dhis2_user = get_dhis2_user_from_request(request)
+            if not dhis2_user:
+                return Response({'status': 'error', 'message': 'No DHIS2 user found in session'}, status=401)
+
+            template, _ = ExportTemplate.objects.get_or_create(
+                name='Holistic Assessment Excel (system)',
+                export_type=ExportTemplate.ExportType.CUSTOM_REPORT,
+                defaults={
+                    'export_format': ExportTemplate.ExportFormat.EXCEL,
+                    'is_system_template': True,
+                    'is_public': True,
+                },
+            )
+
+            job = ExportJob.objects.create(
+                job_id=f"holistic_{uuid.uuid4().hex[:10]}",
+                name=f"Holistic Assessment Export - {timezone.now().strftime('%Y-%m-%d %H:%M')}",
+                template=template,
+                export_format=ExportTemplate.ExportFormat.EXCEL,
+                export_type=ExportTemplate.ExportType.CUSTOM_REPORT,
+                export_parameters={'assessment_config': assessment_config},
+                created_by=dhis2_user,
+                total_records=3,  # coarse stages: fetch started / fetched / file written
+            )
+            job.mark_started()
+
+            # The background thread runs outside the request/response cycle, so it
+            # needs its own DHIS2Client (built from the session key) rather than
+            # sharing `request` - session lookups go through the DB/cache, which is
+            # thread-safe to call from a fresh thread.
+            session_key = request.session.session_key
+            instance_url = dhis2_user.dhis2_instance_url
+            request_data_snapshot = dict(request.data)
+
+            def _run_export():
+                try:
+                    close_old_connections()
+                    client = DHIS2ClientFactory.create_client_from_session(instance_url, session_key)
+                    service = RealTimeDHIS2Service(client)
+
+                    fake_session = type('FakeSession', (), {'session_key': session_key})()
+                    fake_request = type('FakeRequest', (), {
+                        'session': fake_session,
+                        'data': request_data_snapshot,
+                    })()
+
+                    job.update_progress(1, total_count=3)
+                    payload = service.fetch_holistic_assessment_data(fake_request, assessment_config)
+
+                    job.update_progress(2, total_count=3)
+                    file_path = service.generate_holistic_excel(payload, manual_entries, pre_calculated_scores)
+
+                    file_size = os.path.getsize(file_path) if os.path.exists(file_path) else 0
+                    job.mark_completed(file_path=file_path, file_size=file_size)
+                except Exception as exc:
+                    logger.error(f"Async export job {job.job_id} failed: {exc}")
+                    job.mark_failed(error_message=str(exc))
+                finally:
+                    close_old_connections()
+
+            threading.Thread(target=_run_export, daemon=True).start()
+
+            return Response({
+                'status': 'accepted',
+                'job_id': job.id,
+                'status_url': f'/api/exports/jobs/{job.id}/status/',
+                'download_url': f'/api/assessments/holistic-assessment/download_export_result/?job_id={job.id}',
+            }, status=status.HTTP_202_ACCEPTED)
+
+        except ValidationError as e:
+            return Response({'status': 'error', 'message': str(e)}, status=400)
+        except Exception as e:
+            logger.error(f"Error starting async excel export: {e}")
+            return Response({'status': 'error', 'message': 'Failed to start export'}, status=500)
+
+    @action(detail=False, methods=['get'])
+    def download_export_result(self, request):
+        """Stream the completed file for a job created by export_excel_async."""
+        import os
+        from exports.models import ExportJob
+
+        job_id = request.query_params.get('job_id')
+        if not job_id:
+            return Response({'status': 'error', 'message': 'job_id is required'}, status=400)
+
+        dhis2_user = get_dhis2_user_from_request(request)
+        if not dhis2_user:
+            return Response({'status': 'error', 'message': 'No DHIS2 user found in session'}, status=401)
+
+        try:
+            job = ExportJob.objects.get(id=job_id, created_by=dhis2_user)
+        except ExportJob.DoesNotExist:
+            return Response({'status': 'error', 'message': 'Export job not found'}, status=404)
+
+        if job.status != ExportJob.ExportStatus.COMPLETED or not job.file_path:
+            return Response({'status': 'error', 'message': 'Export job is not completed'}, status=400)
+
+        if not os.path.exists(job.file_path):
+            return Response({'status': 'error', 'message': 'Generated file not found'}, status=404)
+
+        with open(job.file_path, 'rb') as f:
+            file_content = f.read()
+
+        from django.http import HttpResponse
+        filename = os.path.basename(job.file_path)
+        response = HttpResponse(
+            file_content,
+            content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+        )
+        response['Content-Disposition'] = f'attachment; filename="{filename}"'
+        return response
 
     @action(detail=False, methods=['post'])
     def save_assessment(self, request):

@@ -18,10 +18,18 @@ from django.contrib import admin
 from django.urls import path, include
 from django.conf import settings
 from django.conf.urls.static import static
+from django.http import JsonResponse
+
+
+def health_check(request):
+    """Liveness check for Docker/Render - process is up, no DB/DHIS2 dependency."""
+    return JsonResponse({'status': 'ok'})
+
 
 urlpatterns = [
     path('admin/', admin.site.urls),
-    
+    path('api/health/', health_check, name='health-check'),
+
     # API endpoints
     path('api/dhis2-auth/', include('dhis2_auth.urls')),
     path('api/indicators/', include('indicators.urls')),
