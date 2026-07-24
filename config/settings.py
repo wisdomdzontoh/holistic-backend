@@ -42,14 +42,25 @@ DEBUG = os.getenv('DEBUG', 'False').lower() == 'true'
 # ALLOWED_HOSTS configuration
 ALLOWED_HOSTS = _split_env_list(
     'ALLOWED_HOSTS',
-    'localhost,127.0.0.1,0.0.0.0,holistic-backend-y7gp.onrender.com,holistic-backend-update.onrender.com'
+    'localhost,127.0.0.1,0.0.0.0,https://holistic-backend-8818.onrender.com'
 )
 
-# Ensure the Render domain is always included for production
-# if not DEBUG:
-#     render_domain = 'holistic-backend-y7gp.onrender.com'
-#     if render_domain not in ALLOWED_HOSTS:
-#         ALLOWED_HOSTS.append(render_domain)
+# Render auto-injects RENDER=true and RENDER_EXTERNAL_HOSTNAME - no manual config
+# needed. Render's own internal health checks/routing probes hit the container
+# with a Host header that doesn't match the public .onrender.com domain (they
+# come from Render's internal network, not the public edge), which Django's
+# ALLOWED_HOSTS check rejects with a 400 - causing every health check to fail
+# and the deploy to time out, even though the app itself is working fine.
+# Wildcarding here is safe: Render's edge is the actual internet-facing
+# boundary (handles TLS termination and only forwards already-routed traffic
+# to this container), so the Host-header-spoofing attack ALLOWED_HOSTS
+# defends against doesn't apply the same way it would for a directly
+# internet-exposed server.
+if os.getenv('RENDER'):
+    ALLOWED_HOSTS.append('*')
+    render_external_hostname = os.getenv('RENDER_EXTERNAL_HOSTNAME')
+    if render_external_hostname and render_external_hostname not in ALLOWED_HOSTS:
+        ALLOWED_HOSTS.append(render_external_hostname)
 
 
 # Application definition
