@@ -44,11 +44,14 @@ USER app
 
 EXPOSE 8000
 
+# Must reference $PORT, not a hardcoded port - Render assigns PORT dynamically
+# (e.g. 10000) and gunicorn binds to it below. A hardcoded port here would
+# silently check a port nothing is listening on and never pass.
 HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
-    CMD python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health/')" || exit 1
+    CMD python -c "import os, urllib.request; urllib.request.urlopen('http://127.0.0.1:' + os.environ.get('PORT', '8000') + '/api/health/')" || exit 1
 
 # JSON-array form so Docker doesn't wrap this in its own shell layer; `exec`
 # inside still lets ${PORT} expand, but replaces the sh process with gunicorn
 # (PID 1) so it receives SIGTERM directly instead of a shell eating it -
 # fixes slow/forced container shutdown on `docker stop` / Ctrl+C.
-CMD ["sh", "-c", "exec gunicorn config.wsgi:application --bind 0.0.0.0:${PORT:-8000} --workers 2 --timeout 120"]
+CMD ["sh", "-c", "exec gunicorn config.wsgi:application --bind 0.0.0.0:${PORT:-8000} --workers 2 --timeout 120 --access-logfile - --error-logfile -"]
