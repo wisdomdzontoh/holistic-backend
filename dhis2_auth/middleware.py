@@ -129,14 +129,24 @@ class DHIS2SessionCleanupMiddleware:
     """
     Middleware to periodically clean up expired sessions.
     """
-    
+
+    # Paths that must never be delayed by a DB-touching cleanup call - notably
+    # the health check, which Render (and any free-tier host that spins the
+    # service down after idle) polls on every cold start. A fresh worker's
+    # last_cleanup is always None, so without this guard the very first
+    # request after a cold start - frequently the health check itself -
+    # triggers a cleanup query. If the DB (e.g. Neon, which also auto-suspends
+    # on the free tier) is cold at that exact moment, the request blocks with
+    # no timeout, the health check never responds, and the deploy times out.
+    SKIP_PATHS = ('/api/health/', '/static/', '/media/')
+
     def __init__(self, get_response):
         self.get_response = get_response
         self.last_cleanup = None
-    
+
     def __call__(self, request):
         # Clean up expired sessions every hour
-        if self._should_cleanup():
+        if not request.path.startswith(self.SKIP_PATHS) and self._should_cleanup():
             from .session import cleanup_expired_sessions
             try:
                 cleanup_expired_sessions()
@@ -144,7 +154,7 @@ class DHIS2SessionCleanupMiddleware:
                 logger.info("DHIS2 session cleanup completed")
             except Exception as e:
                 logger.error(f"Error during DHIS2 session cleanup: {str(e)}")
-        
+
         response = self.get_response(request)
         return response
     

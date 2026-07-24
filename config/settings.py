@@ -157,6 +157,12 @@ if os.getenv('DATABASE_URL'):
     try:
         import dj_database_url
         DATABASES['default'] = dj_database_url.parse(os.getenv('DATABASE_URL'))
+        # Fail fast instead of hanging indefinitely - Neon's free tier auto-suspends
+        # its compute after idle time, so a cold connection can be slow to wake up.
+        # Without a timeout, a request that touches the DB while it's waking (e.g.
+        # a health check hitting session-cleanup middleware) can block a gunicorn
+        # worker forever instead of just erroring and letting the caller retry.
+        DATABASES['default'].setdefault('OPTIONS', {})['connect_timeout'] = 10
     except ImportError:
         pass
     except Exception as e:
