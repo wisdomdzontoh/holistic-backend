@@ -781,11 +781,15 @@ class DHIS2Client:
                     # Remove params from kwargs since we built the URL manually
                     kwargs = {k: v for k, v in kwargs.items() if k != 'params'}
             
-            # Use custom timeout if provided, otherwise use session default
+            # Use custom timeout if provided, otherwise fall back to a bounded
+            # default - requests has NO default timeout of its own, so a call
+            # that doesn't explicitly pass one can hang indefinitely if DHIS2
+            # stops responding entirely (not just responds slowly/with an
+            # error). self.session.timeout is set in __init__ but is otherwise
+            # just a plain attribute requests never reads on its own.
             request_kwargs = kwargs.copy()
-            if timeout is not None:
-                request_kwargs['timeout'] = timeout
-            
+            request_kwargs['timeout'] = timeout if timeout is not None else getattr(self.session, 'timeout', 60)
+
             response = self.session.request(method, url, **request_kwargs)
             
             # Log request details for debugging
@@ -836,12 +840,13 @@ class DHIS2Client:
                 logger.error(f"Response content (first 500 chars): {e.response.text[:500]}")
             raise
 
-    def get_analytics_data(self, data_elements: List[str] = None, indicators: List[str] = None, 
+    def get_analytics_data(self, data_elements: List[str] = None, indicators: List[str] = None,
                       periods: List[str] = None, org_units: List[str] = None,
                       data_sets: List[str] = None, program_indicators: List[str] = None,
                       skip_data: bool = False, skip_meta: bool = False,
                       skip_rounding: bool = False, show_hierarchy: bool = True,
-                      include_num_den: bool = True, output_type: str = "EVENT") -> Dict[str, Any]:
+                      include_num_den: bool = True, output_type: str = "EVENT",
+                      timeout: int = 40) -> Dict[str, Any]:
         """
         Get analytics data from DHIS2 using the /api/analytics endpoint
         FIXED: Using correct DHIS2 analytics API format with dimension parameters
@@ -924,8 +929,14 @@ class DHIS2Client:
             logger.info(f"Org units: {org_units}")
             logger.info(f"Dimensions: {dimensions}")
             
-            # Use longer timeout for analytics requests
-            data = self._make_request("GET", endpoint, params=params, timeout=120)
+            # 40s default - long enough for a legitimately slow-but-working
+            # analytics query, short enough that _fetch_single_indicator_data's
+            # sequential retry across several period formats doesn't compound
+            # into minutes of wait when DHIS2 is struggling. Callers doing their
+            # own batch-size backoff (see RealTimeDHIS2Service) pass an even
+            # shorter one so a struggling DHIS2 origin fails fast enough to
+            # retry smaller / fall back within a bounded overall time budget.
+            data = self._make_request("GET", endpoint, params=params, timeout=timeout)
             
             logger.info(f"DHIS2 analytics response received. Response type: {type(data)}")
             if isinstance(data, dict):
@@ -946,8 +957,8 @@ class DHIS2Client:
             raise
 
     # FIXED: Add new method for data set reports
-    def get_data_set_report(self, data_set_id: str, periods: List[str] = None, 
-                       org_units: List[str] = None, **kwargs) -> Dict[str, Any]:
+    def get_data_set_report(self, data_set_id: str, periods: List[str] = None,
+                       org_units: List[str] = None, timeout: int = None, **kwargs) -> Dict[str, Any]:
         """
         Get data set report from DHIS2 using the /api/dataSetReport endpoint
         This is used for data sets that cannot be queried via analytics endpoint
@@ -980,8 +991,8 @@ class DHIS2Client:
             
             logger.info(f"Making DHIS2 data set report request to {endpoint}")
             logger.info(f"Request parameters: {params}")
-            
-            data = self._make_request("GET", endpoint, params=params)
+
+            data = self._make_request("GET", endpoint, params=params, timeout=timeout)
             
             logger.info(f"DHIS2 data set report response received")
             return data

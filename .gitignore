@@ -3,3 +3,4 @@
 /media/
 .env.txt
 db.sqlite3
+data_export_*.json

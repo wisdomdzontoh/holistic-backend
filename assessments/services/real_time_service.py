@@ -6,6 +6,8 @@ Uses the same synchronous approach as the working old_services.py
 """
 
 import logging
+import requests
+from concurrent.futures import ThreadPoolExecutor, as_completed, wait
 from typing import Dict, List, Any, Optional
 from datetime import datetime, timedelta
 from django.conf import settings
@@ -32,6 +34,18 @@ class RealTimeDHIS2Service:
     # Batched DHIS2 analytics responses are cached briefly so a re-export minutes
     # later (common during a working session) doesn't re-hit DHIS2 at all.
     DHIS2_BATCH_CACHE_TIMEOUT = 60 * 10  # 10 minutes
+
+    # Upper bound on (indicators x periods) "cells" requested in a single DHIS2
+    # analytics call. DHIS2's own server has to compute aggregates for every
+    # cell, and a big enough request can exceed DHIS2's Cloudflare edge timeout
+    # (~100s, outside our control) even though it's nowhere near any URL length
+    # limit. Tuned conservatively; _fetch_chunk_with_backoff adapts below this
+    # anyway if a particular request still turns out to be too expensive.
+    MAX_BATCH_CELLS = 60
+    # Stop auto-splitting a failing chunk below this size - let the normal
+    # per-indicator fallback (with its full period-format retry logic) handle
+    # whatever's left rather than recursing forever.
+    MIN_BATCH_CHUNK_SIZE = 3
 
     def __init__(self, dhis2_client=None):
         self.client = dhis2_client
@@ -262,6 +276,11 @@ class RealTimeDHIS2Service:
             dhis2_value_lookup = self._fetch_batch_indicator_data(
                 dhis2_indicators_for_batch, org_unit_ids[0], periods
             )
+            # Resolve everything the batch step missed concurrently too, so the
+            # per-indicator assembly loops below never block on network I/O.
+            dhis2_resolved_misses = self._prefetch_remaining_indicator_values(
+                dhis2_indicators_for_batch, org_unit_ids[0], periods, dhis2_value_lookup
+            )
 
             # Fetch data for each indicator
             assessment_data = {
@@ -332,7 +351,7 @@ class RealTimeDHIS2Service:
                             try:
                                 if indicator.dhis2_uid:
                                     value = self._fetch_indicator_value_for_period(
-                                        indicator, org_unit_ids[0], period_code, dhis2_value_lookup
+                                        indicator, org_unit_ids[0], period_code, dhis2_value_lookup, dhis2_resolved_misses
                                     )
                                     clean_value = self._clean_numeric_value(value)
                                     # For DHIS2 data, if no value is found, assign 0 to help with scoring
@@ -526,7 +545,7 @@ class RealTimeDHIS2Service:
                             try:
                                 if indicator.dhis2_uid:
                                     value = self._fetch_indicator_value_for_period(
-                                        indicator, org_unit_ids[0], period, dhis2_value_lookup
+                                        indicator, org_unit_ids[0], period, dhis2_value_lookup, dhis2_resolved_misses
                                     )
                                     clean_value = self._clean_numeric_value(value)
                                     # For DHIS2 data, if no value is found, assign 0 to help with scoring
@@ -1122,6 +1141,69 @@ class RealTimeDHIS2Service:
             self.logger.warning(f"Error cleaning numeric value {value}: {str(e)}")
             return None
 
+    # Short fail-fast timeout for batch analytics attempts. A struggling DHIS2
+    # origin can take a very long time to give up on its own (its Cloudflare
+    # edge alone allows ~100s); waiting the full default 120s per attempt, times
+    # however many split levels are tried, risks exceeding gunicorn's own worker
+    # timeout and dropping the connection entirely instead of degrading gracefully.
+    BATCH_ATTEMPT_TIMEOUT = 25
+
+    def _fetch_chunk_with_backoff(self, kwarg_name, uids, converted_periods, org_unit_id, allow_split=True):
+        """
+        Fetch one chunk of a batched DHIS2 analytics call; on failure (e.g. the
+        504 Cloudflare gateway timeout seen when a chunk is too computationally
+        expensive for DHIS2 to aggregate in time), split the chunk in half and
+        retry both halves CONCURRENTLY, one level only (allow_split=False on the
+        retry). This adapts to DHIS2's actual capacity for this specific request
+        instead of a fixed guess, while keeping worst-case wall time bounded to
+        roughly 2x BATCH_ATTEMPT_TIMEOUT regardless of how many indicators are in
+        the chunk - fetching the two halves sequentially, or recursing further,
+        would let a persistently struggling DHIS2 origin blow the total request
+        time up arbitrarily (observed in testing: even small chunks kept failing
+        under sustained origin load, so unbounded recursion just compounds delay
+        without ever succeeding).
+
+        Returns a dict keyed by (dx_uid, pe_code) -> value, same shape as
+        _extract_values_from_analytics_response_batch. Items that still fail after
+        the one retry are simply omitted - the caller (_fetch_indicator_value_for_period)
+        falls back to the single-item fetch path for anything missing from this lookup.
+        """
+        if not uids:
+            return {}
+        try:
+            response = self.client.get_analytics_data(
+                periods=list(converted_periods),
+                org_units=[org_unit_id],
+                timeout=self.BATCH_ATTEMPT_TIMEOUT,
+                **{kwarg_name: uids}
+            )
+            return self._extract_values_from_analytics_response_batch(response)
+        except Exception as e:
+            if not allow_split or len(uids) <= self.MIN_BATCH_CHUNK_SIZE:
+                self.logger.warning(
+                    f"Batch DHIS2 analytics fetch failed for {kwarg_name} chunk "
+                    f"({len(uids)} items): {e}. Falling back to individual fetches for these."
+                )
+                return {}
+
+            mid = len(uids) // 2
+            self.logger.info(
+                f"Batch DHIS2 analytics fetch failed for {kwarg_name} chunk "
+                f"({len(uids)} items): {e}. Retrying as {mid} + {len(uids) - mid} concurrently (one retry only)."
+            )
+            result: Dict[tuple, float] = {}
+            with ThreadPoolExecutor(max_workers=2) as executor:
+                futures = [
+                    executor.submit(self._fetch_chunk_with_backoff, kwarg_name, uids[:mid], converted_periods, org_unit_id, False),
+                    executor.submit(self._fetch_chunk_with_backoff, kwarg_name, uids[mid:], converted_periods, org_unit_id, False),
+                ]
+                for future in as_completed(futures):
+                    try:
+                        result.update(future.result())
+                    except Exception as split_error:
+                        self.logger.error(f"Unexpected error in batch split retry: {split_error}")
+            return result
+
     def _fetch_batch_indicator_data(self, indicators, org_unit_id, periods):
         """
         Batch-fetch DHIS2 analytics data for many indicators x periods in as few
@@ -1182,27 +1264,52 @@ class RealTimeDHIS2Service:
                 'dataElement': 'data_elements',
                 'programIndicator': 'program_indicators',
             }
-            batch_chunk_size = 50
+            # Chunk size is bounded by total "cells" (indicators x periods) in one
+            # DHIS2 analytics call, not just indicator count - a request asking for
+            # many indicators across several periods is much more expensive for
+            # DHIS2 to compute than the same indicator count for one period. A
+            # 35-indicator x 3-period call was observed timing out at DHIS2's own
+            # Cloudflare edge (504, ~100s) even though it's well under any URL
+            # length limit - the origin server itself couldn't compute it in time.
+            num_periods = max(1, len(converted_periods))
+            batch_chunk_size = max(self.MIN_BATCH_CHUNK_SIZE, self.MAX_BATCH_CELLS // num_periods)
 
+            # Flatten every type-group's chunks into one job list and fetch them
+            # ALL concurrently, rather than looping group-by-group (sequential
+            # groups would each pay up to ~2x BATCH_ATTEMPT_TIMEOUT, and with more
+            # than one active indicator_type that stacks up past gunicorn's worker
+            # timeout - most projects only use one type, but nothing should assume
+            # that).
+            jobs = []
             for indicator_type, uids in groups.items():
                 if not uids:
                     continue
                 kwarg_name = fetch_kwarg_name[indicator_type]
-                for i in range(0, len(uids), batch_chunk_size):
-                    chunk = uids[i:i + batch_chunk_size]
-                    try:
-                        response = self.client.get_analytics_data(
-                            periods=list(converted_periods),
-                            org_units=[org_unit_id],
-                            **{kwarg_name: chunk}
-                        )
-                        lookup.update(self._extract_values_from_analytics_response_batch(response))
-                    except Exception as e:
-                        self.logger.warning(
-                            f"Batch DHIS2 analytics fetch failed for {indicator_type} chunk "
-                            f"({len(chunk)} items): {e}. Falling back to individual fetches for these."
-                        )
-                        continue
+                chunks = [uids[i:i + batch_chunk_size] for i in range(0, len(uids), batch_chunk_size)]
+                jobs.extend((kwarg_name, chunk) for chunk in chunks)
+
+            if jobs:
+                # Fetch every chunk (across all type-groups) concurrently - each is
+                # a separate DHIS2 call, and DHIS2Client's underlying requests.Session
+                # is thread-safe for concurrent reads. Capped at 3 concurrent
+                # top-level chunks (each of which may itself spawn 2 more on a split
+                # retry, so worst case ~6 concurrent requests) to avoid piling
+                # additional concurrent load onto a DHIS2 origin that's already
+                # struggling, which would make things worse, not better.
+                with ThreadPoolExecutor(max_workers=min(3, len(jobs))) as executor:
+                    futures = [
+                        executor.submit(self._fetch_chunk_with_backoff, kwarg_name, chunk, converted_periods, org_unit_id)
+                        for kwarg_name, chunk in jobs
+                    ]
+                    # _fetch_chunk_with_backoff already catches everything it can
+                    # anticipate (including recursively) - this is a pure safety
+                    # net so one truly unexpected failure doesn't abandon the
+                    # results of every other already-completed chunk.
+                    for future in as_completed(futures):
+                        try:
+                            lookup.update(future.result())
+                        except Exception as chunk_error:
+                            self.logger.error(f"Unexpected error resolving a batch chunk future: {chunk_error}")
 
         except Exception as e:
             self.logger.error(f"Error batch-fetching DHIS2 indicator data: {str(e)}")
@@ -1215,6 +1322,91 @@ class RealTimeDHIS2Service:
         )
 
         return lookup
+
+    # Wall-clock ceiling for resolving every batch-miss concurrently. Chosen so
+    # batch phase (~2x BATCH_ATTEMPT_TIMEOUT worst case) + this phase stays
+    # comfortably under gunicorn's 120s worker timeout, leaving headroom for the
+    # (now I/O-free) assembly loops and file generation that follow.
+    MISS_PREFETCH_TIME_BUDGET = 45
+    MISS_PREFETCH_MAX_WORKERS = 5
+
+    def _prefetch_remaining_indicator_values(self, indicators, org_unit_id, periods, batch_lookup):
+        """
+        Concurrently resolve every (indicator, period) pair the batch step didn't
+        cover - reporting-rate indicators, dataSet-type indicators (different
+        DHIS2 endpoint, never batched), and genuine batch misses - instead of
+        leaving them to the assembly loops below, which would otherwise fetch
+        each one synchronously, one at a time. With dozens of indicators across
+        several periods, that serial fallback is what turns a struggling DHIS2
+        origin into a multi-minute request (each miss can cost up to
+        BATCH_ATTEMPT_TIMEOUT seconds, and there can be 100+ misses).
+
+        Bounded two ways: a small worker cap (matching the batch phase's own
+        concurrency limit, so this doesn't pile extra load onto a DHIS2 origin
+        that may already be struggling) and a hard wall-clock budget. Whatever
+        isn't resolved by the deadline is recorded as None rather than left
+        unattempted - the assembly loop trusts that (see
+        _fetch_indicator_value_for_period) instead of retrying it synchronously,
+        which would just reintroduce the same unbounded wait this exists to avoid.
+        Threads still in flight when the deadline passes are abandoned (not
+        cancelled - Python can't interrupt a blocking socket read) and simply
+        discarded once they finish; harmless for a long-running worker process.
+
+        Returns a dict keyed by (dhis2_uid, converted_period) -> value_or_None,
+        covering every pair that was attempted.
+        """
+        resolved: Dict[tuple, Any] = {}
+        if not indicators or not periods:
+            return resolved
+
+        pending = []
+        seen_keys = set()
+        for indicator in indicators:
+            if not indicator.dhis2_uid:
+                continue
+            for period in periods:
+                converted = self._convert_to_dhis2_period(period)
+                if not converted:
+                    continue
+                key = (indicator.dhis2_uid, converted)
+                if key in batch_lookup or key in seen_keys:
+                    continue
+                seen_keys.add(key)
+                pending.append((indicator, period, key))
+
+        if not pending:
+            return resolved
+
+        executor = ThreadPoolExecutor(max_workers=self.MISS_PREFETCH_MAX_WORKERS)
+        try:
+            future_map = {
+                executor.submit(self._fetch_single_indicator_data, indicator, org_unit_id, period): key
+                for indicator, period, key in pending
+            }
+            done, not_done = wait(future_map.keys(), timeout=self.MISS_PREFETCH_TIME_BUDGET)
+
+            for future in done:
+                key = future_map[future]
+                try:
+                    resolved[key] = future.result()
+                except Exception as e:
+                    self.logger.warning(f"Prefetch failed for {key}: {e}")
+                    resolved[key] = None
+
+            if not_done:
+                self.logger.warning(
+                    f"Miss-prefetch time budget ({self.MISS_PREFETCH_TIME_BUDGET}s) exhausted "
+                    f"with {len(not_done)}/{len(pending)} pairs still in flight - treating as "
+                    f"unavailable rather than waiting further."
+                )
+                for future in not_done:
+                    resolved[future_map[future]] = None
+        finally:
+            # wait=False: don't block this request on threads whose results we've
+            # already given up on; they'll finish (and be discarded) on their own.
+            executor.shutdown(wait=False)
+
+        return resolved
 
     def _extract_values_from_analytics_response_batch(self, response):
         """
@@ -1266,18 +1458,28 @@ class RealTimeDHIS2Service:
 
         return lookup
 
-    def _fetch_indicator_value_for_period(self, indicator, org_unit_id, period, batch_lookup):
+    def _fetch_indicator_value_for_period(self, indicator, org_unit_id, period, batch_lookup, resolved_misses=None):
         """
-        Look up a pre-fetched batched value first; fall back to the slower
-        single-indicator/single-period fetch (with its full period-format retry
-        logic) for anything the batch didn't cover.
+        Look up a pre-fetched batched value first, then a concurrently-resolved
+        miss (see _prefetch_remaining_indicator_values) before falling back to a
+        live single-indicator/single-period fetch - which, unlike the other two
+        paths, blocks this request on network I/O and should be a rare last
+        resort, not the common case.
         """
-        if batch_lookup:
-            converted_period = self._convert_to_dhis2_period(period)
-            if converted_period:
-                cached = batch_lookup.get((indicator.dhis2_uid, converted_period))
-                if cached is not None:
-                    return cached
+        converted_period = self._convert_to_dhis2_period(period) if (batch_lookup or resolved_misses) else None
+
+        if batch_lookup and converted_period:
+            cached = batch_lookup.get((indicator.dhis2_uid, converted_period))
+            if cached is not None:
+                return cached
+
+        if resolved_misses is not None and converted_period:
+            key = (indicator.dhis2_uid, converted_period)
+            if key in resolved_misses:
+                # Already attempted concurrently, possibly with no result (None) -
+                # trust it rather than paying for a redundant synchronous retry.
+                return resolved_misses[key]
+
         return self._fetch_single_indicator_data(indicator, org_unit_id, period)
 
     def _fetch_single_indicator_data(self, indicator, org_unit_id, period):
@@ -1348,25 +1550,29 @@ class RealTimeDHIS2Service:
                         response = self.client.get_analytics_data(
                             indicators=[indicator.dhis2_uid],
                             periods=[try_period],
-                            org_units=[org_unit_id]
+                            org_units=[org_unit_id],
+                            timeout=self.BATCH_ATTEMPT_TIMEOUT
                         )
                     elif indicator_type == 'dataElement':
                         response = self.client.get_analytics_data(
                             data_elements=[indicator.dhis2_uid],
                             periods=[try_period],
-                            org_units=[org_unit_id]
+                            org_units=[org_unit_id],
+                            timeout=self.BATCH_ATTEMPT_TIMEOUT
                         )
                     elif indicator_type == 'dataSet':
                         response = self.client.get_data_set_report(
                             data_set_id=indicator.dhis2_uid,
                             periods=[try_period],
-                            org_units=[org_unit_id]
+                            org_units=[org_unit_id],
+                            timeout=self.BATCH_ATTEMPT_TIMEOUT
                         )
                     elif indicator_type == 'programIndicator':
                         response = self.client.get_analytics_data(
                             program_indicators=[indicator.dhis2_uid],
                             periods=[try_period],
-                            org_units=[org_unit_id]
+                            org_units=[org_unit_id],
+                            timeout=self.BATCH_ATTEMPT_TIMEOUT
                         )
                     else:
                         # Fallback - try as indicator first, then data element
@@ -1375,29 +1581,40 @@ class RealTimeDHIS2Service:
                             response = self.client.get_analytics_data(
                                 indicators=[indicator.dhis2_uid],
                                 periods=[try_period],
-                                org_units=[org_unit_id]
+                                org_units=[org_unit_id],
+                                timeout=self.BATCH_ATTEMPT_TIMEOUT
                             )
-                        except Exception as e:
+                        except requests.exceptions.RequestException as e:
                             self.logger.info(f"Failed as indicator, trying as data element: {str(e)}")
                             response = self.client.get_analytics_data(
                                 data_elements=[indicator.dhis2_uid],
                                 periods=[try_period],
-                                org_units=[org_unit_id]
+                                org_units=[org_unit_id],
+                                timeout=self.BATCH_ATTEMPT_TIMEOUT
                             )
-                    
+
                     # Extract value from response
                     if indicator_type == 'dataSet':
                         value = self._extract_value_from_dataset_response(response, indicator.dhis2_uid)
                     else:
                         value = self._extract_value_from_analytics_response(response, indicator.dhis2_uid)
-                    
+
                     if value is not None:
                         self.logger.info(f"Successfully fetched data for {indicator.name} using period {try_period}: {value}")
                         return value
+                except requests.exceptions.RequestException as e:
+                    # A request-level failure (timeout, connection error, 5xx) means DHIS2
+                    # itself is unreachable/unhealthy right now - retrying with a different
+                    # period *string* can't fix that, and doing so just multiplies the wait
+                    # (each retry pays the same timeout again). Give up immediately instead
+                    # of trying every remaining format or falling through to the alternative-
+                    # format cascade below.
+                    self.logger.warning(f"DHIS2 request failed for {indicator.name} (period {try_period}): {str(e)}")
+                    return None
                 except Exception as e:
                     self.logger.debug(f"Error fetching data for period {try_period}: {str(e)}")
                     continue
-            
+
             # If no data found with any period format, try alternative period formats
             self.logger.info(f"No data found for {indicator.name} using any period format, trying alternative formats")
             return self._try_alternative_period_formats(indicator, org_unit_id, period)
@@ -1623,19 +1840,22 @@ class RealTimeDHIS2Service:
                         response = self.client.get_analytics_data(
                             indicators=[indicator.dhis2_uid],
                             periods=[alt_period],
-                            org_units=[org_unit_id]
+                            org_units=[org_unit_id],
+                            timeout=self.BATCH_ATTEMPT_TIMEOUT
                         )
                     elif indicator.indicator_type == 'dataElement':
                         response = self.client.get_analytics_data(
                             data_elements=[indicator.dhis2_uid],
                             periods=[alt_period],
-                            org_units=[org_unit_id]
+                            org_units=[org_unit_id],
+                            timeout=self.BATCH_ATTEMPT_TIMEOUT
                         )
                     elif indicator.indicator_type == 'dataSet':
                         response = self.client.get_data_set_report(
                             data_set_id=indicator.dhis2_uid,
                             periods=[alt_period],
-                            org_units=[org_unit_id]
+                            org_units=[org_unit_id],
+                            timeout=self.BATCH_ATTEMPT_TIMEOUT
                         )
                     else:
                         continue
@@ -1649,7 +1869,13 @@ class RealTimeDHIS2Service:
                     if value is not None:
                         self.logger.info(f"Found data using alternative period format: {alt_period}")
                         return value
-                        
+
+                except requests.exceptions.RequestException as e:
+                    # DHIS2 itself failed to respond - other alt period strings will hit the
+                    # same unresponsive server, so stop here instead of paying the timeout
+                    # again for every remaining candidate.
+                    self.logger.warning(f"DHIS2 request failed for alternative period {alt_period}: {str(e)}")
+                    return None
                 except Exception as e:
                     self.logger.debug(f"Alternative period {alt_period} failed: {str(e)}")
                     continue
