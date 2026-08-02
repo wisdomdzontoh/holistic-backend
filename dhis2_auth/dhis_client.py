@@ -518,9 +518,62 @@ class DHIS2Client:
                 return []
             
             return hierarchy
-                
+
         except Exception as e:
             logger.error(f"Error getting organization unit hierarchy: {str(e)}")
+            raise
+
+    def get_org_unit_subtree(self, root_ids: List[str], max_depth: int = 3, timeout: int = 20) -> List[Dict[str, Any]]:
+        """
+        Fetch only the subtree(s) rooted at the given org unit IDs, with DHIS2
+        itself resolving the nesting server-side via recursive `children[...]`
+        field expansion - one API call, response size proportional to the
+        subtree, not the whole instance.
+
+        This exists because get_org_unit_hierarchy() (above) always pages
+        through EVERY org unit in the instance first and only filters down to
+        root_id afterwards - for a national health system with thousands of
+        facilities, that made the org unit picker slow to load regardless of
+        caching, and it never restricted the *content* of the tree to org
+        units the requesting user is actually assigned to. Callers should pass
+        the DHIS2 user's own organisationUnits as root_ids so each user only
+        ever sees their own facility/district subtree, matching how DHIS2
+        itself scopes data access per user.
+
+        Args:
+            root_ids: Org unit IDs to use as tree roots (typically the
+                requesting user's own assigned organisationUnits).
+            max_depth: How many levels deep to nest children (1 = just the
+                root units themselves, no children).
+            timeout: Request timeout in seconds - kept short since this is a
+                lightweight metadata query (unlike analytics aggregation) that
+                sits directly in a page load's critical path.
+
+        Returns:
+            List of root org unit dicts (one per root_id found), each with a
+            nested `children` list matching the shape _build_hierarchy_from_flat_list
+            produces, so callers don't need to know which path was used.
+        """
+        if not root_ids:
+            return []
+
+        base_fields = "id,name,displayName,level,path,code"
+        fields = base_fields
+        for _ in range(max(0, max_depth - 1)):
+            fields = f"{base_fields},children[{fields}]"
+
+        endpoint = "api/organisationUnits"
+        params = {
+            "filter": f"id:in:[{','.join(root_ids)}]",
+            "fields": fields,
+            "paging": "false",
+        }
+
+        try:
+            data = self._make_request("GET", endpoint, params=params, timeout=timeout)
+            return data.get('organisationUnits', [])
+        except Exception as e:
+            logger.error(f"Error fetching org unit subtree for roots {root_ids}: {str(e)}")
             raise
 
     def _build_hierarchy_from_flat_list(self, org_units: List[Dict[str, Any]], root_id: str = None, max_depth: int = 3) -> List[Dict[str, Any]]:

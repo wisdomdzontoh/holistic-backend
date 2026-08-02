@@ -842,17 +842,48 @@ class AssessmentManagementViewSet(viewsets.ViewSet):
             # Get org units from DHIS2 based on parameters
             if hierarchy:
                 cache_service = CacheService()
-                cache_key = cache_service.generate_cache_key(
-                    "dhis2_org_hierarchy", instance_url, root_id or "all", max_depth
-                )
 
-                org_units = None if force_refresh else cache_service.get_assessment_cache(cache_key)
-                if org_units is None:
-                    # Get hierarchical structure for tree view
-                    org_units = client.get_org_unit_hierarchy(root_id, max_depth)
-                    cache_service.set_assessment_cache(
-                        cache_key, org_units, timeout=self.ORG_UNIT_HIERARCHY_CACHE_TIMEOUT
+                if root_id:
+                    root_ids = [root_id]
+                else:
+                    # Default to the requesting user's own DHIS2 org units,
+                    # not the entire national hierarchy - this is what makes
+                    # the tree "a DHIS2 user's org unit tree" (matches how
+                    # DHIS2 itself scopes data access per user) and is also
+                    # the real fix for the picker being slow to load: DHIS2
+                    # now only has to resolve one small subtree instead of
+                    # this app paging through every org unit in the instance.
+                    root_ids = sorted({
+                        ou['id'] for ou in session_data.get('org_units', []) if ou.get('id')
+                    })
+
+                if root_ids:
+                    # Cache key must include the resolved root ids - they're
+                    # user-specific, so a shared key (as the old "all" key
+                    # was) would leak one user's tree to every other user.
+                    cache_key = cache_service.generate_cache_key(
+                        "dhis2_org_subtree", instance_url, root_ids, max_depth
                     )
+                    org_units = None if force_refresh else cache_service.get_assessment_cache(cache_key)
+                    if org_units is None:
+                        org_units = client.get_org_unit_subtree(root_ids, max_depth)
+                        cache_service.set_assessment_cache(
+                            cache_key, org_units, timeout=self.ORG_UNIT_HIERARCHY_CACHE_TIMEOUT
+                        )
+                else:
+                    # No org units assigned to this DHIS2 user (e.g. a
+                    # superuser account not tied to a specific facility) -
+                    # fall back to the full instance-wide hierarchy rather
+                    # than returning nothing.
+                    cache_key = cache_service.generate_cache_key(
+                        "dhis2_org_hierarchy", instance_url, "all", max_depth
+                    )
+                    org_units = None if force_refresh else cache_service.get_assessment_cache(cache_key)
+                    if org_units is None:
+                        org_units = client.get_org_unit_hierarchy(None, max_depth)
+                        cache_service.set_assessment_cache(
+                            cache_key, org_units, timeout=self.ORG_UNIT_HIERARCHY_CACHE_TIMEOUT
+                        )
             elif user_only:
                 # Get user's accessible org units
                 org_units = client.get_user_accessible_org_units()
