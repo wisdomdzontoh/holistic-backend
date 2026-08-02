@@ -1175,6 +1175,7 @@ class RealTimeDHIS2Service:
                 periods=list(converted_periods),
                 org_units=[org_unit_id],
                 timeout=self.BATCH_ATTEMPT_TIMEOUT,
+                skip_meta=True,
                 **{kwarg_name: uids}
             )
             return self._extract_values_from_analytics_response_batch(response)
@@ -1504,7 +1505,8 @@ class RealTimeDHIS2Service:
                 response = self.client.get_analytics_data(
                     data_elements=[indicator.dhis2_uid],
                     periods=[dhis2_period],
-                    org_units=[org_unit_id]
+                    org_units=[org_unit_id],
+                    skip_meta=True
                 )
                 value = self._extract_value_from_analytics_response(response, indicator.dhis2_uid)
                 if value is not None:
@@ -1551,14 +1553,16 @@ class RealTimeDHIS2Service:
                             indicators=[indicator.dhis2_uid],
                             periods=[try_period],
                             org_units=[org_unit_id],
-                            timeout=self.BATCH_ATTEMPT_TIMEOUT
+                            timeout=self.BATCH_ATTEMPT_TIMEOUT,
+                            skip_meta=True
                         )
                     elif indicator_type == 'dataElement':
                         response = self.client.get_analytics_data(
                             data_elements=[indicator.dhis2_uid],
                             periods=[try_period],
                             org_units=[org_unit_id],
-                            timeout=self.BATCH_ATTEMPT_TIMEOUT
+                            timeout=self.BATCH_ATTEMPT_TIMEOUT,
+                            skip_meta=True
                         )
                     elif indicator_type == 'dataSet':
                         response = self.client.get_data_set_report(
@@ -1572,7 +1576,8 @@ class RealTimeDHIS2Service:
                             program_indicators=[indicator.dhis2_uid],
                             periods=[try_period],
                             org_units=[org_unit_id],
-                            timeout=self.BATCH_ATTEMPT_TIMEOUT
+                            timeout=self.BATCH_ATTEMPT_TIMEOUT,
+                            skip_meta=True
                         )
                     else:
                         # Fallback - try as indicator first, then data element
@@ -1582,7 +1587,8 @@ class RealTimeDHIS2Service:
                                 indicators=[indicator.dhis2_uid],
                                 periods=[try_period],
                                 org_units=[org_unit_id],
-                                timeout=self.BATCH_ATTEMPT_TIMEOUT
+                                timeout=self.BATCH_ATTEMPT_TIMEOUT,
+                                skip_meta=True
                             )
                         except requests.exceptions.RequestException as e:
                             self.logger.info(f"Failed as indicator, trying as data element: {str(e)}")
@@ -1590,7 +1596,8 @@ class RealTimeDHIS2Service:
                                 data_elements=[indicator.dhis2_uid],
                                 periods=[try_period],
                                 org_units=[org_unit_id],
-                                timeout=self.BATCH_ATTEMPT_TIMEOUT
+                                timeout=self.BATCH_ATTEMPT_TIMEOUT,
+                                skip_meta=True
                             )
 
                     # Extract value from response
@@ -1841,14 +1848,16 @@ class RealTimeDHIS2Service:
                             indicators=[indicator.dhis2_uid],
                             periods=[alt_period],
                             org_units=[org_unit_id],
-                            timeout=self.BATCH_ATTEMPT_TIMEOUT
+                            timeout=self.BATCH_ATTEMPT_TIMEOUT,
+                            skip_meta=True
                         )
                     elif indicator.indicator_type == 'dataElement':
                         response = self.client.get_analytics_data(
                             data_elements=[indicator.dhis2_uid],
                             periods=[alt_period],
                             org_units=[org_unit_id],
-                            timeout=self.BATCH_ATTEMPT_TIMEOUT
+                            timeout=self.BATCH_ATTEMPT_TIMEOUT,
+                            skip_meta=True
                         )
                     elif indicator.indicator_type == 'dataSet':
                         response = self.client.get_data_set_report(

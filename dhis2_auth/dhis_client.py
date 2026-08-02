@@ -523,6 +523,51 @@ class DHIS2Client:
             logger.error(f"Error getting organization unit hierarchy: {str(e)}")
             raise
 
+    @staticmethod
+    def _nested_org_unit_fields(max_depth: int) -> str:
+        """Build a `children[children[...]]`-nested fields string, max_depth levels deep."""
+        base_fields = "id,name,displayName,level,path,code"
+        fields = base_fields
+        for _ in range(max(0, max_depth - 1)):
+            fields = f"{base_fields},children[{fields}]"
+        return fields
+
+    def get_user_org_unit_tree(self, max_depth: int = 3, timeout: int = 20) -> List[Dict[str, Any]]:
+        """
+        Fetch the org unit tree scoped to the authenticated user's own DHIS2
+        data-view org units in a single call, using the API's native
+        userDataViewOnly/userDataViewFallback filters (falls back to the
+        user's data-capture org units if they have no explicit data-view
+        assignment) combined with recursive children[...] field expansion -
+        DHIS2 resolves both "which org units belong to this user" and "the
+        nested tree" server-side, in one round trip.
+
+        Preferred over get_org_unit_subtree() with a manually-resolved root_id
+        list for the common case: it uses DHIS2's own authoritative scoping
+        (data-view org units - the correct scope for a reporting/assessment
+        tool - can be broader than the data-capture org units returned by
+        /api/me) instead of this app replicating that logic from a cached
+        session snapshot.
+
+        Returns:
+            List of root org unit dicts (typically one, occasionally more for
+            users assigned multiple org units), each with a nested `children`
+            list matching the shape _build_hierarchy_from_flat_list produces.
+        """
+        endpoint = "api/organisationUnits"
+        params = {
+            "userDataViewOnly": "true",
+            "userDataViewFallback": "true",
+            "fields": self._nested_org_unit_fields(max_depth),
+            "paging": "false",
+        }
+        try:
+            data = self._make_request("GET", endpoint, params=params, timeout=timeout)
+            return data.get('organisationUnits', [])
+        except Exception as e:
+            logger.error(f"Error fetching user-scoped org unit tree: {str(e)}")
+            raise
+
     def get_org_unit_subtree(self, root_ids: List[str], max_depth: int = 3, timeout: int = 20) -> List[Dict[str, Any]]:
         """
         Fetch only the subtree(s) rooted at the given org unit IDs, with DHIS2
@@ -541,8 +586,10 @@ class DHIS2Client:
         itself scopes data access per user.
 
         Args:
-            root_ids: Org unit IDs to use as tree roots (typically the
-                requesting user's own assigned organisationUnits).
+            root_ids: Org unit IDs to use as tree roots - use this method over
+                get_user_org_unit_tree() when a specific root is needed (e.g.
+                an explicit root_id request) rather than "whatever this user
+                is scoped to".
             max_depth: How many levels deep to nest children (1 = just the
                 root units themselves, no children).
             timeout: Request timeout in seconds - kept short since this is a
@@ -557,15 +604,10 @@ class DHIS2Client:
         if not root_ids:
             return []
 
-        base_fields = "id,name,displayName,level,path,code"
-        fields = base_fields
-        for _ in range(max(0, max_depth - 1)):
-            fields = f"{base_fields},children[{fields}]"
-
         endpoint = "api/organisationUnits"
         params = {
             "filter": f"id:in:[{','.join(root_ids)}]",
-            "fields": fields,
+            "fields": self._nested_org_unit_fields(max_depth),
             "paging": "false",
         }
 
