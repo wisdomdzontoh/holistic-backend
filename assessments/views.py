@@ -828,7 +828,11 @@ class AssessmentManagementViewSet(viewsets.ViewSet):
             include_children = request.GET.get('include_children', 'false').lower() == 'true'
             hierarchy = request.GET.get('hierarchy', 'false').lower() == 'true'
             root_id = request.GET.get('root_id')
-            max_depth = int(request.GET.get('max_depth', '3'))
+            # Default covers this instance's full hierarchy depth (National=1
+            # through Facility=5, confirmed via /api/organisationUnitLevels) so
+            # a user rooted at any level - regional included - sees all the way
+            # down to facilities instead of being cut off partway.
+            max_depth = int(request.GET.get('max_depth', '5'))
             force_refresh = request.GET.get('force_refresh', 'false').lower() == 'true'
 
             instance_url = session_data.get('instance_url')
