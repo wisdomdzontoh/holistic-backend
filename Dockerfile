@@ -54,4 +54,14 @@ HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
 # inside still lets ${PORT} expand, but replaces the sh process with gunicorn
 # (PID 1) so it receives SIGTERM directly instead of a shell eating it -
 # fixes slow/forced container shutdown on `docker stop` / Ctrl+C.
-CMD ["sh", "-c", "exec gunicorn config.wsgi:application --bind 0.0.0.0:${PORT:-8000} --workers 2 --timeout 120 --access-logfile - --error-logfile -"]
+#
+# `migrate --noinput` runs first, before gunicorn starts - Render's free tier
+# has no persistent shell/pre-deploy-command step, so without this every
+# deploy that adds a migration needs a manual `manage.py migrate` run against
+# Neon by hand (see DEPLOYMENT.md Step 5) or the new code 500s on the
+# out-of-sync schema. Idempotent - a no-op in ~1s when nothing's pending, so
+# it's safe to run on every cold start too, not just real deploys. `&&` means
+# gunicorn never starts if migrate fails, so a broken migration shows up as a
+# failed deploy/health check instead of the app silently serving against a
+# stale schema.
+CMD ["sh", "-c", "python manage.py migrate --noinput && exec gunicorn config.wsgi:application --bind 0.0.0.0:${PORT:-8000} --workers 2 --timeout 120 --access-logfile - --error-logfile -"]
