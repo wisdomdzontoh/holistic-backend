@@ -1337,3 +1337,144 @@ class SavedAssessment(models.Model):
         if not self.metadata:
             return 'holistic'
         return self.metadata.get('assessment_type', 'holistic')
+
+
+class BulkAssessmentJob(models.Model):
+    """
+    Tracks a background run that generates one Holistic Assessment per facility
+    in a DHIS2 organisation unit group (e.g. "every District Hospital in my
+    region"), instead of a user repeating the single-facility flow manually.
+    """
+    class Status(models.TextChoices):
+        PENDING = 'pending', _('Pending')
+        IN_PROGRESS = 'in_progress', _('In Progress')
+        COMPLETED = 'completed', _('Completed')
+        COMPLETED_WITH_ERRORS = 'completed_with_errors', _('Completed with errors')
+        FAILED = 'failed', _('Failed')
+        CANCELLED = 'cancelled', _('Cancelled')
+
+    name = models.CharField(max_length=255)
+
+    # Target selection
+    org_unit_group_id = models.CharField(max_length=255)
+    org_unit_group_name = models.CharField(max_length=255, blank=True)
+    org_unit_level = models.PositiveSmallIntegerField(null=True, blank=True)
+    org_unit_level_name = models.CharField(max_length=255, blank=True)
+
+    # periods holds DHIS2 period codes (e.g. "2024Q1") - what's passed into
+    # fetch_holistic_assessment_data. period_labels holds the matching display
+    # names with spaces (e.g. "2024 Q1") - what SavedAssessment.periods expects,
+    # per the same convention the interactive save flow already uses.
+    periods = models.JSONField(default=list)
+    period_labels = models.JSONField(default=list)
+
+    status = models.CharField(max_length=25, choices=Status.choices, default=Status.PENDING)
+
+    total_facilities = models.PositiveIntegerField(default=0)
+    processed_facilities = models.PositiveIntegerField(default=0)
+    succeeded_facilities = models.PositiveIntegerField(default=0)
+    failed_facilities = models.PositiveIntegerField(default=0)
+    progress_percentage = models.IntegerField(
+        default=0, validators=[MinValueValidator(0), MaxValueValidator(100)]
+    )
+
+    # Cooperative cancellation - the background thread checks this between
+    # facilities rather than being killed outright.
+    cancel_requested = models.BooleanField(default=False)
+
+    # Job-level failure only (e.g. target resolution itself failing before any
+    # item exists) - per-facility failures live on BulkAssessmentJobItem instead.
+    error_message = models.TextField(blank=True)
+
+    created_by = models.ForeignKey(
+        DHIS2User, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='bulk_assessment_jobs'
+    )
+    # Needed by the background thread to build its own DHIS2Client after the
+    # originating request has already returned.
+    session_key = models.CharField(max_length=255, blank=True)
+
+    created_at = models.DateTimeField(auto_now_add=True)
+    started_at = models.DateTimeField(null=True, blank=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        db_table = 'bulk_assessment_jobs'
+        verbose_name = 'Bulk Assessment Job'
+        verbose_name_plural = 'Bulk Assessment Jobs'
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['created_by', 'created_at']),
+            models.Index(fields=['status']),
+        ]
+
+    def __str__(self):
+        return f"{self.name} ({self.get_status_display()})"
+
+    def mark_started(self):
+        self.status = self.Status.IN_PROGRESS
+        self.started_at = timezone.now()
+        self.save(update_fields=['status', 'started_at'])
+
+    def update_progress(self):
+        if self.total_facilities > 0:
+            self.progress_percentage = int(self.processed_facilities / self.total_facilities * 100)
+        self.save(update_fields=[
+            'processed_facilities', 'succeeded_facilities', 'failed_facilities', 'progress_percentage'
+        ])
+
+    def mark_finished(self):
+        if self.cancel_requested:
+            self.status = self.Status.CANCELLED
+        elif self.failed_facilities == 0:
+            self.status = self.Status.COMPLETED
+        else:
+            self.status = self.Status.COMPLETED_WITH_ERRORS
+        self.completed_at = timezone.now()
+        self.progress_percentage = 100
+        self.save(update_fields=['status', 'completed_at', 'progress_percentage'])
+
+    def mark_failed(self, error_message: str):
+        self.status = self.Status.FAILED
+        self.error_message = error_message[:2000]
+        self.completed_at = timezone.now()
+        self.save(update_fields=['status', 'error_message', 'completed_at'])
+
+
+class BulkAssessmentJobItem(models.Model):
+    """One facility within a BulkAssessmentJob."""
+    class Status(models.TextChoices):
+        PENDING = 'pending', _('Pending')
+        IN_PROGRESS = 'in_progress', _('In Progress')
+        COMPLETED = 'completed', _('Completed')
+        FAILED = 'failed', _('Failed')
+        SKIPPED = 'skipped', _('Skipped')
+
+    job = models.ForeignKey(BulkAssessmentJob, on_delete=models.CASCADE, related_name='items')
+    org_unit_id = models.CharField(max_length=255, db_index=True)
+    org_unit_name = models.CharField(max_length=255, blank=True)
+    order = models.PositiveIntegerField(default=0)
+
+    status = models.CharField(max_length=15, choices=Status.choices, default=Status.PENDING)
+    saved_assessment = models.ForeignKey(
+        SavedAssessment, on_delete=models.SET_NULL, null=True, blank=True,
+        related_name='bulk_job_items'
+    )
+    error_message = models.TextField(blank=True)
+    attempt_count = models.PositiveIntegerField(default=0)
+
+    started_at = models.DateTimeField(null=True, blank=True)
+    completed_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        db_table = 'bulk_assessment_job_items'
+        verbose_name = 'Bulk Assessment Job Item'
+        verbose_name_plural = 'Bulk Assessment Job Items'
+        ordering = ['order', 'id']
+        unique_together = [('job', 'org_unit_id')]
+        indexes = [
+            models.Index(fields=['job', 'status']),
+        ]
+
+    def __str__(self):
+        return f"{self.org_unit_name} - {self.get_status_display()}"

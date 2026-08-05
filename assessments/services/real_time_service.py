@@ -956,18 +956,19 @@ class RealTimeDHIS2Service:
             import tempfile
             import uuid
             from datetime import datetime
-            
+            import re
+
             temp_dir = getattr(settings, 'EXCEL_EXPORT_DIR', '/tmp')
             os.makedirs(temp_dir, exist_ok=True)
             
-            # Generate filename with org unit name and date
-            org_unit_name = data.get('org_unit_name', 'Unknown')
-            # Handle None case and clean org unit name for filename (remove special characters)
-            if org_unit_name is None:
-                org_unit_name = 'Unknown'
-            clean_org_name = org_unit_name.replace(' ', '_').replace('/', '_').replace('\\', '_').replace(':', '_')
-            current_date = datetime.now().strftime('%d-%m-%Y')
-            filename = f"{clean_org_name}_{current_date}.xlsx"
+            # Generate filename with org unit name and date, e.g.
+            # "Adabraka Polyclinic_05_08_2026.xlsx" - keep the org unit name
+            # human-readable (spaces intact), only strip characters that are
+            # actually illegal in a filename.
+            org_unit_name = data.get('org_unit_name') or 'Unknown'
+            safe_org_name = re.sub(r'[\\/:*?"<>|]', '_', org_unit_name).strip()
+            current_date = datetime.now().strftime('%d_%m_%Y')
+            filename = f"{safe_org_name}_{current_date}.xlsx"
             file_path = os.path.join(temp_dir, filename)
             wb.save(file_path)
             

@@ -432,13 +432,13 @@ class DHIS2Client:
             logger.error(f"Error getting organization units: {str(e)}")
             raise
 
-    def get_org_unit_by_id(self, org_unit_id: str) -> Dict[str, Any]:
+    def get_org_unit_by_id(self, org_unit_id: str, timeout: int = 20) -> Dict[str, Any]:
         """
         Get a single organisation unit by ID
-        
+
         Args:
             org_unit_id: The organisation unit ID
-            
+
         Returns:
             Organisation unit dictionary or None if not found
         """
@@ -447,13 +447,87 @@ class DHIS2Client:
             params = {
                 "fields": "id,name,displayName,level,path,code,parent[id,name,displayName]"
             }
-            
-            data = self._make_request("GET", endpoint, params=params)
+
+            data = self._make_request("GET", endpoint, params=params, timeout=timeout)
             return data
-            
+
         except Exception as e:
             logger.error(f"Error getting organization unit {org_unit_id}: {str(e)}")
             return None
+
+    def get_organisation_unit_groups(self, timeout: int = 20) -> List[Dict[str, Any]]:
+        """
+        List DHIS2 organisation unit groups (e.g. CHAG, CHPS, Clinic, District
+        Hospital) - powers the bulk-assessment "select a group" picker.
+
+        Named get_organisation_unit_groups rather than get_org_unit_groups
+        deliberately: that shorter name is already referenced (but never
+        defined) by organisation/services.py's dead sync path, which calls a
+        method that doesn't exist on this class. Reusing that name here would
+        create a confusing same-name/different-shape collision with dead code.
+        """
+        try:
+            endpoint = "api/organisationUnitGroups"
+            params = {
+                "fields": "id,name,shortName",
+                "paging": "false",
+            }
+            data = self._make_request("GET", endpoint, params=params, timeout=timeout)
+            return data.get('organisationUnitGroups', [])
+        except Exception as e:
+            logger.error(f"Error fetching organisation unit groups: {str(e)}")
+            raise
+
+    def get_organisation_unit_levels(self, timeout: int = 20) -> List[Dict[str, Any]]:
+        """List DHIS2 organisation unit levels (e.g. National, Region, District, Facility)."""
+        try:
+            endpoint = "api/organisationUnitLevels"
+            params = {
+                "fields": "id,name,level",
+                "order": "level:asc",
+                "paging": "false",
+            }
+            data = self._make_request("GET", endpoint, params=params, timeout=timeout)
+            return data.get('organisationUnitLevels', [])
+        except Exception as e:
+            logger.error(f"Error fetching organisation unit levels: {str(e)}")
+            raise
+
+    def get_org_units_by_group(self, group_id: str, level: int = None,
+                                root_path: str = None, timeout: int = 25) -> List[Dict[str, Any]]:
+        """
+        Resolve org units belonging to a group, optionally narrowed to a
+        hierarchy level and/or a subtree (via path prefix) - all filtered
+        server-side in one DHIS2 call rather than fetching a group's full
+        membership and filtering in Python. DHIS2 ANDs multiple `filter=`
+        params together by default, so group + level + path-prefix combine
+        correctly ("District Hospitals, in my region's subtree").
+
+        Args:
+            group_id: DHIS2 organisation unit group UID.
+            level: Optional hierarchy level to restrict to.
+            root_path: Optional path prefix (an org unit's own `path` value)
+                to restrict results to that unit's subtree - used to scope
+                bulk generation to the requesting user's own DHIS2 access.
+        """
+        filters = [f"organisationUnitGroups.id:eq:{group_id}"]
+        if level is not None:
+            filters.append(f"level:eq:{level}")
+        if root_path:
+            filters.append(f"path:$like:{root_path}")
+
+        endpoint = "api/organisationUnits"
+        params = {
+            "filter": filters,
+            "fields": "id,name,level,path",
+            "paging": "false",
+        }
+        try:
+            data = self._make_request("GET", endpoint, params=params, timeout=timeout)
+            return data.get('organisationUnits', [])
+        except Exception as e:
+            logger.error(f"Error fetching org units for group {group_id}: {str(e)}")
+            raise
 
     def get_org_unit_hierarchy(self, root_id: str = None, max_depth: int = 3) -> List[Dict[str, Any]]:
         """

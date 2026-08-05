@@ -15,7 +15,8 @@ import json
 
 from .models import (
     DataSyncLog, IndicatorData, IndicatorScore, ObjectiveScore, SectorScore,
-    SavedAssessment, AuditLog, ConflictResolution, MilestoneScore
+    SavedAssessment, AuditLog, ConflictResolution, MilestoneScore,
+    BulkAssessmentJob, BulkAssessmentJobItem
 )
 from .serializers import (
     DataSyncLogSerializer, DataSyncLogCreateSerializer,
@@ -30,7 +31,8 @@ from .serializers import (
     HolisticAssessmentSaveSerializer, AuditLogSerializer, ConflictResolutionSerializer,
     ConflictResolutionCreateSerializer, ConflictResolutionUpdateSerializer,
     ManualOverrideSerializer, AuditLogFilterSerializer, ConflictResolutionFilterSerializer,
-    ManualDataUpdateSerializer, BulkManualDataUpdateSerializer, ManualScoreOverrideSerializer
+    ManualDataUpdateSerializer, BulkManualDataUpdateSerializer, ManualScoreOverrideSerializer,
+    BulkAssessmentStartSerializer
 )
 # Services will be imported lazily to avoid circular imports
 from dhis2_auth.session import get_dhis2_user, get_dhis2_user_from_request, get_dhis2_session_data
@@ -896,6 +898,61 @@ class AssessmentManagementViewSet(viewsets.ViewSet):
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
 
+    # Groups/levels change rarely - cache longer than the org unit tree itself.
+    ORG_UNIT_GROUPS_CACHE_TIMEOUT = 60 * 30  # 30 minutes
+
+    @action(detail=False, methods=['get'], url_path='dhis2-org-unit-groups')
+    def dhis2_org_unit_groups(self, request):
+        """DHIS2 organisation unit groups (e.g. CHAG, CHPS, District Hospital) - powers the bulk-generate target picker."""
+        try:
+            session_data = get_dhis2_session_data(request.session.session_key)
+            if not session_data:
+                return Response({"error": "Incomplete DHIS2 session data"}, status=status.HTTP_401_UNAUTHORIZED)
+
+            instance_url = session_data.get('instance_url')
+            client = DHIS2ClientFactory.create_client_from_session(instance_url, request.session.session_key)
+
+            cache_service = CacheService()
+            cache_key = cache_service.generate_cache_key("dhis2_org_unit_groups", instance_url)
+            groups = cache_service.get_assessment_cache(cache_key)
+            if groups is None:
+                groups = client.get_organisation_unit_groups()
+                cache_service.set_assessment_cache(cache_key, groups, timeout=self.ORG_UNIT_GROUPS_CACHE_TIMEOUT)
+
+            return Response({"success": True, "groups": groups, "total": len(groups)})
+        except Exception as e:
+            logger.error(f"Error fetching DHIS2 org unit groups: {str(e)}")
+            return Response(
+                {"success": False, "error": f"Failed to fetch org unit groups from DHIS2: {str(e)}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+    @action(detail=False, methods=['get'], url_path='dhis2-org-unit-levels')
+    def dhis2_org_unit_levels(self, request):
+        """DHIS2 organisation unit levels (e.g. National, Region, District, Facility)."""
+        try:
+            session_data = get_dhis2_session_data(request.session.session_key)
+            if not session_data:
+                return Response({"error": "Incomplete DHIS2 session data"}, status=status.HTTP_401_UNAUTHORIZED)
+
+            instance_url = session_data.get('instance_url')
+            client = DHIS2ClientFactory.create_client_from_session(instance_url, request.session.session_key)
+
+            cache_service = CacheService()
+            cache_key = cache_service.generate_cache_key("dhis2_org_unit_levels", instance_url)
+            levels = cache_service.get_assessment_cache(cache_key)
+            if levels is None:
+                levels = client.get_organisation_unit_levels()
+                cache_service.set_assessment_cache(cache_key, levels, timeout=self.ORG_UNIT_GROUPS_CACHE_TIMEOUT)
+
+            return Response({"success": True, "levels": levels, "total": len(levels)})
+        except Exception as e:
+            logger.error(f"Error fetching DHIS2 org unit levels: {str(e)}")
+            return Response(
+                {"success": False, "error": f"Failed to fetch org unit levels from DHIS2: {str(e)}"},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
     @action(detail=False, methods=['get'])
     def generate_periods(self, request):
         """
@@ -1571,6 +1628,95 @@ class HolisticAssessmentViewSet(viewsets.ViewSet):
             return Response({'status': 'error', 'message': str(e)}, status=400)
         except Exception as e:
             logger.error(f"Error exporting holistic excel: {e}")
+            return Response({'status': 'error', 'message': 'Failed to export Excel'}, status=500)
+
+    @action(detail=False, methods=['get'])
+    def export_saved_excel(self, request):
+        """
+        Export an already-generated SavedAssessment (e.g. one produced by bulk
+        generation) to Excel without re-fetching DHIS2 - avoids both the extra
+        DHIS2 load and any drift between what was actually saved and what a
+        "Download" click would otherwise show.
+        """
+        import os
+        from django.http import HttpResponse
+
+        assessment_id = request.query_params.get('assessment_id')
+        if not assessment_id:
+            return Response({'status': 'error', 'message': 'assessment_id is required'}, status=400)
+
+        dhis2_user = get_dhis2_user_from_request(request)
+        if not dhis2_user:
+            return Response({'status': 'error', 'message': 'No DHIS2 user found in session'}, status=401)
+
+        try:
+            saved = SavedAssessment.objects.get(id=assessment_id, created_by=dhis2_user)
+        except SavedAssessment.DoesNotExist:
+            return Response({'status': 'error', 'message': 'Assessment not found'}, status=404)
+
+        try:
+            # SavedAssessment.indicator_data is a flat dict keyed by indicator id
+            # (see app/dashboard/assessment/page.tsx's save flow) - regroup it
+            # back under objectives, the shape generate_holistic_excel expects.
+            objectives_map = {}
+            for indicator in (saved.indicator_data or {}).values():
+                obj_id = indicator.get('objective_id')
+                if obj_id not in objectives_map:
+                    objectives_map[obj_id] = {
+                        'id': obj_id,
+                        'name': indicator.get('objective_name', ''),
+                        'code': '',
+                        'color': '#fd7e14',
+                        'milestone': None,
+                        'indicators': [],
+                        '_order': 0,
+                    }
+                clean_indicator = {
+                    k: v for k, v in indicator.items() if k not in ('objective_id', 'objective_name')
+                }
+                objectives_map[obj_id]['indicators'].append(clean_indicator)
+
+            # Restore real code/color/order from the Objective table (not stored
+            # per-indicator) where the objective still exists.
+            objective_ids = [oid for oid in objectives_map.keys() if oid is not None]
+            for obj in Objective.objects.filter(id__in=objective_ids):
+                if obj.id in objectives_map:
+                    objectives_map[obj.id]['code'] = obj.code
+                    objectives_map[obj.id]['color'] = obj.color
+                    objectives_map[obj.id]['_order'] = obj.order
+
+            objectives_list = sorted(objectives_map.values(), key=lambda o: o['_order'])
+            for objective in objectives_list:
+                del objective['_order']
+
+            periods = saved.periods or []
+            payload = [{
+                'org_unit_id': saved.org_unit_id,
+                'org_unit_name': saved.org_unit_name,
+                'assessment_period': {
+                    'id': 1,
+                    'name': f"{periods[0]} to {periods[-1]}" if len(periods) > 1 else (periods[0] if periods else ''),
+                    'start_date': periods[0] if periods else '',
+                    'end_date': periods[-1] if periods else '',
+                },
+                'objectives': objectives_list,
+            }]
+
+            file_path = self.realtime_service.generate_holistic_excel(payload)
+
+            if os.path.exists(file_path):
+                with open(file_path, 'rb') as f:
+                    file_content = f.read()
+                filename = os.path.basename(file_path)
+                response = HttpResponse(
+                    file_content,
+                    content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+                )
+                response['Content-Disposition'] = f'attachment; filename="{filename}"'
+                return response
+            return Response({'status': 'error', 'message': 'Generated file not found'}, status=404)
+        except Exception as e:
+            logger.error(f"Error exporting saved assessment {assessment_id}: {e}")
             return Response({'status': 'error', 'message': 'Failed to export Excel'}, status=500)
 
     @action(detail=False, methods=['post'])
@@ -2890,3 +3036,166 @@ class DashboardViewSet(viewsets.ViewSet):
                 {'error': f'Failed to fetch analysis data: {str(e)}'},
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
+
+
+class BulkAssessmentViewSet(viewsets.ViewSet):
+    """
+    Bulk-generates a Holistic Assessment per facility in a DHIS2 organisation
+    unit group, in the background, without overwhelming DHIS2. See
+    assessments/services/bulk_assessment_service.py for the actual runner -
+    this viewset only resolves targets, creates the job, and reports status.
+    """
+    permission_classes = [IsAuthenticated]
+
+    # Facility resolution has no facility-level parallelism (see
+    # bulk_assessment_service.BULK_FACILITY_CONCURRENCY), so an unbounded
+    # target set could run for hours - cap it and ask the user to narrow
+    # their selection instead.
+    MAX_BULK_FACILITIES = 150
+
+    @action(detail=False, methods=['post'])
+    def start(self, request):
+        from .services import resolve_target_org_units, start_bulk_assessment_job
+
+        serializer = BulkAssessmentStartSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        dhis2_user = get_dhis2_user_from_request(request)
+        if not dhis2_user:
+            return Response({'status': 'error', 'message': 'No DHIS2 user found in session'}, status=401)
+
+        session_data = get_dhis2_session_data(request.session.session_key)
+        if not session_data:
+            return Response({'status': 'error', 'message': 'Incomplete DHIS2 session data'}, status=401)
+
+        try:
+            client = DHIS2ClientFactory.create_client_from_session(
+                session_data.get('instance_url'), request.session.session_key
+            )
+            target_units = resolve_target_org_units(
+                client, session_data, data['org_unit_group_id'], level=data.get('org_unit_level')
+            )
+        except Exception as e:
+            logger.error(f"Error resolving bulk assessment targets: {e}")
+            return Response(
+                {'status': 'error', 'message': f'Failed to resolve target facilities from DHIS2: {str(e)}'},
+                status=502
+            )
+
+        if not target_units:
+            return Response(
+                {'status': 'error', 'message': 'No facilities matched this group/level within your own DHIS2 org unit access.'},
+                status=400
+            )
+        if len(target_units) > self.MAX_BULK_FACILITIES:
+            return Response(
+                {
+                    'status': 'error',
+                    'message': (
+                        f'{len(target_units)} facilities matched - narrow your selection '
+                        f'(e.g. add a level filter) to {self.MAX_BULK_FACILITIES} or fewer.'
+                    ),
+                },
+                status=400
+            )
+
+        periods = data['periods']
+        job = BulkAssessmentJob.objects.create(
+            name=f"{data.get('org_unit_group_name') or data['org_unit_group_id']} - {timezone.now().strftime('%Y-%m-%d %H:%M')}",
+            org_unit_group_id=data['org_unit_group_id'],
+            org_unit_group_name=data.get('org_unit_group_name', ''),
+            org_unit_level=data.get('org_unit_level'),
+            org_unit_level_name=data.get('org_unit_level_name', ''),
+            periods=periods['codes'],
+            period_labels=periods['labels'],
+            total_facilities=len(target_units),
+            created_by=dhis2_user,
+            session_key=request.session.session_key,
+        )
+
+        BulkAssessmentJobItem.objects.bulk_create([
+            BulkAssessmentJobItem(
+                job=job,
+                org_unit_id=unit['id'],
+                org_unit_name=unit.get('name', unit['id']),
+                order=index,
+            )
+            for index, unit in enumerate(target_units)
+        ])
+
+        start_bulk_assessment_job(job.id)
+
+        return Response(
+            {'status': 'success', 'job_id': job.id, 'total_facilities': job.total_facilities},
+            status=202
+        )
+
+    def _serialize_job(self, job):
+        return {
+            'id': job.id,
+            'name': job.name,
+            'status': job.status,
+            'status_display': job.get_status_display(),
+            'total_facilities': job.total_facilities,
+            'processed_facilities': job.processed_facilities,
+            'succeeded_facilities': job.succeeded_facilities,
+            'failed_facilities': job.failed_facilities,
+            'progress_percentage': job.progress_percentage,
+            'error_message': job.error_message,
+            'created_at': job.created_at.isoformat(),
+            'started_at': job.started_at.isoformat() if job.started_at else None,
+            'completed_at': job.completed_at.isoformat() if job.completed_at else None,
+        }
+
+    @action(detail=True, methods=['get'])
+    def status(self, request, pk=None):
+        dhis2_user = get_dhis2_user_from_request(request)
+        if not dhis2_user:
+            return Response({'status': 'error', 'message': 'No DHIS2 user found in session'}, status=401)
+
+        try:
+            job = BulkAssessmentJob.objects.get(id=pk, created_by=dhis2_user)
+        except BulkAssessmentJob.DoesNotExist:
+            return Response({'status': 'error', 'message': 'Job not found'}, status=404)
+
+        items = [
+            {
+                'id': item.id,
+                'org_unit_id': item.org_unit_id,
+                'org_unit_name': item.org_unit_name,
+                'status': item.status,
+                'status_display': item.get_status_display(),
+                'saved_assessment_id': item.saved_assessment_id,
+                'error_message': item.error_message,
+            }
+            for item in job.items.all()
+        ]
+
+        return Response({'status': 'success', 'job': self._serialize_job(job), 'items': items})
+
+    @action(detail=True, methods=['post'])
+    def cancel(self, request, pk=None):
+        dhis2_user = get_dhis2_user_from_request(request)
+        if not dhis2_user:
+            return Response({'status': 'error', 'message': 'No DHIS2 user found in session'}, status=401)
+
+        try:
+            job = BulkAssessmentJob.objects.get(id=pk, created_by=dhis2_user)
+        except BulkAssessmentJob.DoesNotExist:
+            return Response({'status': 'error', 'message': 'Job not found'}, status=404)
+
+        if job.status in (BulkAssessmentJob.Status.PENDING, BulkAssessmentJob.Status.IN_PROGRESS):
+            job.cancel_requested = True
+            job.save(update_fields=['cancel_requested'])
+
+        return Response({'status': 'success', 'job': self._serialize_job(job)})
+
+    @action(detail=False, methods=['get'])
+    def my_jobs(self, request):
+        dhis2_user = get_dhis2_user_from_request(request)
+        if not dhis2_user:
+            return Response({'status': 'error', 'message': 'No DHIS2 user found in session'}, status=401)
+
+        jobs = BulkAssessmentJob.objects.filter(created_by=dhis2_user).order_by('-created_at')[:20]
+        return Response({'status': 'success', 'jobs': [self._serialize_job(job) for job in jobs]})

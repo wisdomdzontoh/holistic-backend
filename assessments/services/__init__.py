@@ -20,6 +20,9 @@ from .analytics_service import AnalyticsService
 # Excel and export services
 from .excel_service import ExcelExportService
 
+# Bulk assessment generation
+from .bulk_assessment_service import resolve_target_org_units, start_bulk_assessment_job, run_bulk_assessment_job
+
 # Data processing services
 from .data_processing_service import DataProcessingService
 from .period_service import PeriodService
@@ -43,7 +46,12 @@ __all__ = [
     
     # Export services
     'ExcelExportService',
-    
+
+    # Bulk assessment generation
+    'resolve_target_org_units',
+    'start_bulk_assessment_job',
+    'run_bulk_assessment_job',
+
     # Data processing
     'DataProcessingService',
     'PeriodService',

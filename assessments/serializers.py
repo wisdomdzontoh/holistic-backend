@@ -460,6 +460,46 @@ class HolisticAssessmentRequestSerializer(serializers.Serializer):
         help_text="Pre-calculated scores from frontend"
     )
 
+class BulkAssessmentStartSerializer(serializers.Serializer):
+    """
+    Serializer for starting a bulk assessment generation job - target facilities
+    are resolved server-side from a DHIS2 org unit group (+ optional level),
+    scoped to the requesting user's own org unit access.
+    """
+    org_unit_group_id = serializers.CharField(max_length=255)
+    org_unit_group_name = serializers.CharField(max_length=255, required=False, allow_blank=True, default='')
+    org_unit_level = serializers.IntegerField(required=False, allow_null=True, default=None)
+    org_unit_level_name = serializers.CharField(max_length=255, required=False, allow_blank=True, default='')
+    periods = serializers.ListField(
+        required=True,
+        help_text="List of period objects ({code, name}) or plain period code strings"
+    )
+
+    def validate_periods(self, value):
+        """
+        Normalize into both forms needed downstream: DHIS2 period codes (what
+        fetch_holistic_assessment_data expects) and display names with spaces
+        (what SavedAssessment.periods stores, matching the interactive save
+        flow's convention).
+        """
+        if not value:
+            raise serializers.ValidationError("At least one period is required")
+
+        codes, labels = [], []
+        for period in value:
+            if isinstance(period, dict):
+                code = period.get('code')
+                if not code:
+                    raise serializers.ValidationError(f"Period object must contain 'code': {period}")
+                name = period.get('name') or period.get('displayName') or code
+                codes.append(str(code))
+                labels.append(str(name))
+            else:
+                codes.append(str(period))
+                labels.append(str(period))
+        return {'codes': codes, 'labels': labels}
+
+
 class HolisticAssessmentSaveSerializer(serializers.Serializer):
     """
     Serializer for saving holistic assessments

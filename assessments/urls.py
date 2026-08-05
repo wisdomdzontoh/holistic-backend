@@ -13,6 +13,7 @@ router.register(r'audit-logs', views.AuditLogViewSet, basename='audit-logs')
 router.register(r'conflict-resolutions', views.ConflictResolutionViewSet, basename='conflict-resolutions')
 router.register(r'manual-overrides', views.ManualOverrideViewSet, basename='manual-overrides')
 router.register(r'manual-data-entry', views.ManualDataEntryViewSet, basename='manual-data-entry')
+router.register(r'bulk-assessment-jobs', views.BulkAssessmentViewSet, basename='bulk-assessment-jobs')
 
 urlpatterns = [
     path('', include(router.urls)),
@@ -62,6 +63,8 @@ urlpatterns = [
         path('dhis2-periods/', views.AssessmentManagementViewSet.as_view({'get': 'dhis2_periods'}), name='dhis2-periods'),
         path('dhis2-relative-periods/', views.AssessmentManagementViewSet.as_view({'get': 'dhis2_relative_periods'}), name='dhis2-relative-periods'),
         path('dhis2-org-units/', views.AssessmentManagementViewSet.as_view({'get': 'dhis2_org_units'}), name='dhis2-org-units'),
+        path('dhis2-org-unit-groups/', views.AssessmentManagementViewSet.as_view({'get': 'dhis2_org_unit_groups'}), name='dhis2-org-unit-groups'),
+        path('dhis2-org-unit-levels/', views.AssessmentManagementViewSet.as_view({'get': 'dhis2_org_unit_levels'}), name='dhis2-org-unit-levels'),
         path('dhis2-period-types/', views.AssessmentManagementViewSet.as_view({'get': 'dhis2_period_types'}), name='dhis2-period-types'),
         path('test-dhis2-connection/', views.AssessmentManagementViewSet.as_view({'get': 'test_dhis2_connection'}), name='test-dhis2-connection'),
     ])),
