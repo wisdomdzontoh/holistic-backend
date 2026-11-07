@@ -958,17 +958,17 @@ class RealTimeDHIS2Service:
             from datetime import datetime
             import re
 
-            temp_dir = getattr(settings, 'EXCEL_EXPORT_DIR', '/tmp')
+            from ..download_utils import assessment_export_filename
+
+            # Each export gets its own folder so two exports of the same facility
+            # on the same day (same filename) can't overwrite each other before
+            # they're downloaded. The basename is what the user sees.
+            temp_dir = os.path.join(getattr(settings, 'EXCEL_EXPORT_DIR', '/tmp'), uuid.uuid4().hex)
             os.makedirs(temp_dir, exist_ok=True)
-            
-            # Generate filename with org unit name and date, e.g.
-            # "Adabraka Polyclinic_05_08_2026.xlsx" - keep the org unit name
-            # human-readable (spaces intact), only strip characters that are
-            # actually illegal in a filename.
-            org_unit_name = data.get('org_unit_name') or 'Unknown'
-            safe_org_name = re.sub(r'[\\/:*?"<>|]', '_', org_unit_name).strip()
-            current_date = datetime.now().strftime('%d_%m_%Y')
-            filename = f"{safe_org_name}_{current_date}.xlsx"
+
+            # Naming convention: "<Org unit name>_<dd_mm_yyyy>.xlsx",
+            # e.g. "Adabraka Polyclinic_05_08_2026.xlsx".
+            filename = assessment_export_filename(data.get('org_unit_name') if data else None)
             file_path = os.path.join(temp_dir, filename)
             wb.save(file_path)
             

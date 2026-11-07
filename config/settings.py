@@ -216,6 +216,9 @@ CORS_ALLOW_HEADERS = [
 CORS_EXPOSE_HEADERS = [
     'set-cookie',
     'access-control-allow-credentials',
+    # The frontend runs on a different origin; without this the browser hides
+    # the download filename and the file is saved under a generic fallback name.
+    'content-disposition',
 ]
 CORS_ALLOW_CREDENTIALS = True
 

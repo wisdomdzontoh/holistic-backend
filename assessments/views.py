@@ -38,6 +38,7 @@ from .serializers import (
 from dhis2_auth.session import get_dhis2_user, get_dhis2_user_from_request, get_dhis2_session_data
 from dhis2_auth.dhis_client import DHIS2ClientFactory
 from .services.cache_service import CacheService
+from .download_utils import content_disposition_attachment
 from configurations.models import AssessmentPeriod
 from indicators.models import TrackedIndicator
 from configurations.models import Objective
@@ -1618,7 +1619,7 @@ class HolisticAssessmentViewSet(viewsets.ViewSet):
                 # Return file as response
                 from django.http import HttpResponse
                 response = HttpResponse(file_content, content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')
-                response['Content-Disposition'] = f'attachment; filename="{filename}"'
+                response['Content-Disposition'] = content_disposition_attachment(filename)
                 logger.info(f"Excel export completed successfully: {filename}")
                 return response
             else:
@@ -1712,7 +1713,7 @@ class HolisticAssessmentViewSet(viewsets.ViewSet):
                     file_content,
                     content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
                 )
-                response['Content-Disposition'] = f'attachment; filename="{filename}"'
+                response['Content-Disposition'] = content_disposition_attachment(filename)
                 return response
             return Response({'status': 'error', 'message': 'Generated file not found'}, status=404)
         except Exception as e:
@@ -1856,7 +1857,7 @@ class HolisticAssessmentViewSet(viewsets.ViewSet):
             file_content,
             content_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
         )
-        response['Content-Disposition'] = f'attachment; filename="{filename}"'
+        response['Content-Disposition'] = content_disposition_attachment(filename)
         return response
 
     @action(detail=False, methods=['post'])
